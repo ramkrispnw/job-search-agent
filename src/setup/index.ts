@@ -342,25 +342,40 @@ const PRESET_LOCATIONS = [
 
 async function setupLocations(existing?: string[]): Promise<string[]> {
   setupStepHeader(6, TOTAL_STEPS, "Preferred Locations");
-  info("Select all locations you're open to. Roles not matching will be filtered out.\n");
+  info("Space to select/deselect, Enter to confirm. Uncheck to remove.\n");
 
   const { checkbox } = await import("@inquirer/prompts");
 
-  const presetSelected = await checkbox({
-    message: "Select preferred locations (space to select, enter to confirm):",
-    choices: PRESET_LOCATIONS.map(l => ({
+  const presetValues = new Set(PRESET_LOCATIONS.map(p => p.value));
+
+  // Existing custom locations (not in the preset list) become extra checkbox entries
+  const existingCustom = (existing ?? []).filter(l => !presetValues.has(l));
+
+  const choices = [
+    ...PRESET_LOCATIONS.map(l => ({
       ...l,
       checked: existing ? existing.includes(l.value) : l.value === "Remote"
+    })),
+    ...existingCustom.map(l => ({
+      name: `${l}  ${chalk.dim("(custom)")}`,
+      value: l,
+      checked: true   // already saved → checked by default, user can uncheck to remove
     }))
+  ];
+
+  const selected = await checkbox({
+    message: "Select preferred locations:",
+    choices
   });
 
-  const customStr = await input({
-    message: "Add custom locations (comma-separated, press Enter to skip):",
-    default: existing?.filter(l => !PRESET_LOCATIONS.map(p => p.value).includes(l)).join(", ") ?? ""
+  // Text input for adding brand-new custom locations
+  const addStr = await input({
+    message: "Add more locations (comma-separated, Enter to skip):",
+    default: ""
   });
 
-  const custom = customStr.split(",").map(l => l.trim()).filter(Boolean);
-  const locations = [...new Set([...presetSelected, ...custom])];
+  const added = addStr.split(",").map(l => l.trim()).filter(Boolean);
+  const locations = [...new Set([...selected, ...added])];
 
   if (locations.length === 0) {
     console.log(chalk.yellow("  No locations selected — all locations will be considered.\n"));
