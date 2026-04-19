@@ -130,7 +130,7 @@ async function setupResume(apiKey: string, existing?: UserConfig["resume"]): Pro
     await fs.writeFile(originalPath, parsedText, "utf8");
     success(`Local copy saved to ${originalPath}`);
   } else {
-    const filePath = await input({
+    let filePath = await input({
       message: "Path to your resume file:",
       validate: async (val) => {
         const expanded = val.replace("~", process.env.HOME!);
@@ -426,22 +426,19 @@ async function setupOutput(existing?: UserConfig["output"]): Promise<UserConfig[
 
   while (true) {
     clientId = await input({
-      message: "Google OAuth Client ID:",
-      hint: "ends with .apps.googleusercontent.com",
+      message: "Google OAuth Client ID (ends with .apps.googleusercontent.com):",
       default: clientId || undefined,
       validate: (v) => v.includes(".apps.googleusercontent.com") ? true : "Should end with .apps.googleusercontent.com"
     });
 
     clientSecret = await input({
-      message: "Google OAuth Client Secret:",
-      hint: "starts with GOCSPX-",
+      message: "Google OAuth Client Secret (starts with GOCSPX-):",
       default: clientSecret || undefined,
       validate: (v) => v.startsWith("GOCSPX-") ? true : "Should start with GOCSPX-"
     });
 
     refreshToken = await input({
-      message: "Google OAuth Refresh Token:",
-      hint: "starts with 1// — copy only the token value, not the full JSON",
+      message: "Google OAuth Refresh Token (starts with 1//, copy value only not full JSON):",
       default: refreshToken || undefined,
       validate: (v) => {
         if (v.startsWith("1//")) return true;
@@ -453,8 +450,7 @@ async function setupOutput(existing?: UserConfig["output"]): Promise<UserConfig[
     });
 
     folderId = await input({
-      message: "Google Drive Folder ID:",
-      hint: "the last part of the folder URL — short alphanumeric string only",
+      message: "Google Drive Folder ID (short alphanumeric string from the folder URL):",
       default: folderId || undefined,
       validate: (v) => {
         const clean = v.trim();
@@ -616,6 +612,8 @@ async function main() {
     npm run status  — view application tracker
     npm run resume  — update your master resume
   `));
+
+  process.exit(0);
 }
 
 main().catch((err) => {

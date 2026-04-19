@@ -8,17 +8,18 @@ export async function generateCoverLetter(
   resumeText: string,
   job: JobResult,
   candidateName: string,
-  model: string
+  model: string,
+  onWait?: (seconds: number, attempt: number) => void
 ): Promise<string> {
   const today = new Date().toLocaleDateString("en-US", {
     year: "numeric", month: "long", day: "numeric"
   });
 
-  const prompt = `
-Write a concise, compelling cover letter for this candidate applying to the role below.
+  // Resume text is sent as a cached prefix — reads don't count toward token rate limits
+  const cachedPrefix = `## Candidate Resume\n${resumeText}`;
 
-## Candidate Resume
-${resumeText}
+  const prompt = `
+Write a concise, compelling cover letter for the candidate (resume provided above) applying to the role below.
 
 ## Target Role
 Title: ${job.title}
@@ -47,5 +48,5 @@ Hiring Team, ${job.company}
 Re: ${job.title}
 `;
 
-  return ask(apiKey, prompt, "You are an expert cover letter writer. Be direct, specific, human.", 4096, model);
+  return ask(apiKey, prompt, "You are an expert cover letter writer. Be direct, specific, human.", 800, model, 4, cachedPrefix, onWait);
 }

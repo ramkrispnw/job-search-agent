@@ -73,7 +73,7 @@ export function upsertApplication(app: Application): void {
     ON CONFLICT(job_id) DO UPDATE SET
       status = excluded.status,
       output_dir = excluded.output_dir
-  `).run(app);
+  `).run({ output_dir: null, ...app });
 }
 
 export function markApplied(jobId: string, notes?: string): void {
