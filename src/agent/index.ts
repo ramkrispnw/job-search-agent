@@ -20,25 +20,13 @@ import { sendJobReport } from "../tools/emailSender";
 import { applyToJob } from "../ats/index";
 import { upsertApplication, logRun, getStats, getAll } from "../tracker/index";
 import { CONFIG_DIR } from "../config/types";
-
-function header(text: string) {
-  console.log("\n" + chalk.bold.cyan("━".repeat(60)));
-  console.log(chalk.bold.white(` ${text}`));
-  console.log(chalk.bold.cyan("━".repeat(60)) + "\n");
-}
+import { agentHeader, dashboardBox } from "../utils/ui";
 
 function slugify(s: string) {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 30);
 }
 
 async function main() {
-  console.log(chalk.bold.cyan(`
-  ╔══════════════════════════════════════════╗
-  ║        job-search-agent  v2.0            ║
-  ║  search · score · tailor · apply         ║
-  ╚══════════════════════════════════════════╝
-  `));
-
   if (!(await configExists())) {
     console.error(chalk.red("  No config found. Run setup first:\n  npm run setup"));
     process.exit(1);
@@ -50,28 +38,33 @@ async function main() {
   const roleCount = preferences.dailyRoleCount ?? 5;
   const minBaseSalary = preferences.minBaseSalary;
 
-  // Show lifetime stats if available
+  // ── Config dashboard ───────────────────────────────────────────────────────
+  const candidateName = resume.parsedText.split("\n")[0].trim() || "Candidate";
+  let lifetimeStr = "";
   try {
     const stats = getStats();
     if (stats.total > 0) {
-      console.log(chalk.dim(
-        `  Lifetime: ${stats.total} tracked · ${stats.applied} applied · ` +
-        `${stats.interviewing} interviewing · ${stats.offers} offers · ` +
-        `${stats.responseRate} response rate\n`
-      ));
+      lifetimeStr = `${stats.total} tracked · ${stats.applied} applied · ${stats.interviewing} interviewing · ${stats.offers} offers · ${stats.responseRate} response rate`;
     }
   } catch { /* first run */ }
 
+  dashboardBox("job-search-agent  v2.0", [
+    { label: "Candidate",  value: candidateName },
+    { label: "Model",      value: model },
+    { label: "Roles/day",  value: String(roleCount) + (minBaseSalary ? `  ·  Min base $${(minBaseSalary/1000).toFixed(0)}k` : "") },
+    { label: "Output",     value: output.mode === "local" ? `Local → ${output.localPath}` : `Google Drive (${output.resumeFormat})` },
+    ...(lifetimeStr ? [{ label: "Lifetime", value: lifetimeStr }] : []),
+  ]);
+
   const dateStr = format(new Date(), "yyyy-MM-dd");
+  const TOTAL_STEPS = preferences.emailReport ? 9 : 8;
 
   // ── Step 1: Resume ────────────────────────────────────────────────────────
-  header("Step 1 — Loading Resume");
-  const candidateName = resume.parsedText.split("\n")[0].trim() || "Candidate";
+  agentHeader(1, TOTAL_STEPS, "Loading Resume");
   console.log(chalk.green(`  ✓ ${candidateName} · ${resume.parsedText.split(" ").length} words`));
-  console.log(chalk.dim(`  Model: ${model} · ${roleCount} roles/day${minBaseSalary ? ` · Min base $${(minBaseSalary/1000).toFixed(0)}k` : ""}`));
 
   // ── Step 2: Search ────────────────────────────────────────────────────────
-  header("Step 2 — Searching for Matching Roles");
+  agentHeader(2, TOTAL_STEPS, "Searching for Matching Roles");
   const previousRoles = (() => {
     try { return getAll().map(a => ({ company: a.company, title: a.title })); } catch { return []; }
   })();
@@ -91,7 +84,7 @@ async function main() {
   const sortedJobs = jobs.sort((a, b) => b.alignmentScore - a.alignmentScore);
 
   // ── Step 3: Shortlist ─────────────────────────────────────────────────────
-  header(`Step 3 — Top ${roleCount} Shortlisted Roles`);
+  agentHeader(3, TOTAL_STEPS, `Top ${roleCount} Shortlisted Roles`);
   sortedJobs.forEach((job, i) => {
     const bar = "█".repeat(job.alignmentScore) + "░".repeat(10 - job.alignmentScore);
     console.log(chalk.bold(`  ${i + 1}. ${job.title}`));
@@ -101,7 +94,7 @@ async function main() {
   });
 
   // ── Step 4: Salary Research ───────────────────────────────────────────────
-  header("Step 4 — Researching Salary Ranges");
+  agentHeader(4, TOTAL_STEPS, "Researching Salary Ranges");
   const salaryData: SalaryData[] = [];
   for (const job of sortedJobs) {
     const sp = ora(`  ${job.company}...`).start();
@@ -119,7 +112,7 @@ async function main() {
   }
 
   // ── Step 4b: Application Requirements ────────────────────────────────────
-  header("Step 4b — Researching Application Requirements");
+  agentHeader(5, TOTAL_STEPS, "Application Requirements");
   const appRequirements: AppRequirements[] = [];
   for (const job of sortedJobs) {
     const sp = ora(`  ${job.company}: checking requirements...`).start();
@@ -138,13 +131,13 @@ async function main() {
   }
 
   // ── Step 5: Jobs Report ───────────────────────────────────────────────────
-  header("Step 5 — Generating Jobs Report");
+  agentHeader(6, TOTAL_STEPS, "Generating Jobs Report");
   const reportSpinner = ora("Building HTML report...").start();
   const report = generateJobsReport(sortedJobs, candidateName, targetRoles, targetCompanyTypes, salaryData, appRequirements, minBaseSalary);
   reportSpinner.succeed("HTML jobs report ready");
 
   // ── Step 6: Resumes + Cover Letters + Question Answers ────────────────────
-  header("Step 6 — Tailoring Resumes, Cover Letters & Answers");
+  agentHeader(7, TOTAL_STEPS, "Tailoring Resumes, Cover Letters & Answers");
 
   const outputFiles: OutputFile[] = [{ name: "jobs-report.html", content: report, type: "report" }];
   const localItems: { job: JobResult; jobId: string; resumePath: string; coverText: string }[] = [];
@@ -205,7 +198,7 @@ async function main() {
   }
 
   // ── Step 7: Save Output ───────────────────────────────────────────────────
-  header("Step 7 — Saving Output");
+  agentHeader(8, TOTAL_STEPS, "Saving Output");
   const saveSpin = ora(`Writing ${outputFiles.length} files...`).start();
   let outputPath = "";
   try {
@@ -232,7 +225,7 @@ async function main() {
   const isInteractive = process.stdout.isTTY;
 
   if (isInteractive) {
-    header("Step 8 — Apply");
+    agentHeader(TOTAL_STEPS, TOTAL_STEPS, "Apply");
 
     const applyMode = await select({
       message: "How would you like to handle applications?",
@@ -284,6 +277,10 @@ ${outputFiles.map(f => `    • ${f.name}`).join("\n")}
 }
 
 main().catch((err) => {
+  if (err?.name === "ExitPromptError" || err?.constructor?.name === "ExitPromptError") {
+    console.log(chalk.yellow("\n\n  Interrupted. Progress saved — run again to continue.\n"));
+    process.exit(0);
+  }
   console.error(chalk.red("\n  Error: " + err.message));
   process.exit(1);
 });

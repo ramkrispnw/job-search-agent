@@ -10,14 +10,9 @@ import { parseResume, extractGoogleDocId, fetchGoogleDoc } from "../utils/resume
 import { ask } from "../utils/claude";
 import { saveConfig, loadConfig } from "../utils/config";
 import { getAuthClient, verifyFolderAccess } from "../tools/googleDrive";
+import { setupStepHeader, reviewBox, successBox, infoBox } from "../utils/ui";
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-function header(text: string) {
-  console.log("\n" + chalk.bold.cyan("━".repeat(60)));
-  console.log(chalk.bold.white(` ${text}`));
-  console.log(chalk.bold.cyan("━".repeat(60)) + "\n");
-}
+const TOTAL_STEPS = 8;
 
 function success(text: string) {
   console.log(chalk.green("  ✓ ") + text);
@@ -30,7 +25,7 @@ function info(text: string) {
 // ─── Step 0: API Key ─────────────────────────────────────────────────────────
 
 async function setupApiKey(existing?: string): Promise<string> {
-  header("Step 0 — Anthropic API Key");
+  setupStepHeader(1, TOTAL_STEPS, "Anthropic API Key");
   info("Your API key is stored locally in ~/.job-search-agent/config.json");
   info("Get one at: https://console.anthropic.com/settings/keys\n");
 
@@ -70,7 +65,7 @@ const MODELS = [
 ];
 
 async function setupModel(existing?: string): Promise<string> {
-  header("Step 0b — Claude Model");
+  setupStepHeader(2, TOTAL_STEPS, "Claude Model");
   info("Choose which Claude model powers the agent. This affects quality and API cost.\n");
 
   return select({
@@ -83,7 +78,7 @@ async function setupModel(existing?: string): Promise<string> {
 // ─── Step 1: Resume Upload ───────────────────────────────────────────────────
 
 async function setupResume(apiKey: string, existing?: UserConfig["resume"]): Promise<UserConfig["resume"]> {
-  header("Step 1 — Upload Your Resume");
+  setupStepHeader(3, TOTAL_STEPS, "Resume");
 
   if (existing) {
     const reuse = await confirm({
@@ -185,7 +180,7 @@ async function setupTargetRoles(
   resumeText: string,
   existing?: string[]
 ): Promise<string[]> {
-  header("Step 2 — Target Roles");
+  setupStepHeader(4, TOTAL_STEPS, "Target Roles");
 
   let roles: string[] = existing ?? [];
 
@@ -252,7 +247,7 @@ async function setupCompanyTypes(
   resumeText: string,
   existing?: string[]
 ): Promise<string[]> {
-  header("Step 3 — Target Company Types");
+  setupStepHeader(5, TOTAL_STEPS, "Company Types");
 
   let types: string[] = existing ?? [];
 
@@ -314,7 +309,7 @@ ${resumeText}`,
 async function setupPreferences(
   existing?: UserConfig["preferences"]
 ): Promise<UserConfig["preferences"]> {
-  header("Step 4 — Search Preferences");
+  setupStepHeader(6, TOTAL_STEPS, "Preferences");
 
   const { input: numberInput } = await import("@inquirer/prompts");
 
@@ -358,7 +353,7 @@ async function setupEmailConfig(
   applicantEmail: string,
   existing?: UserConfig["emailConfig"]
 ): Promise<UserConfig["emailConfig"]> {
-  header("Step 4b — Email Configuration (Gmail)");
+  setupStepHeader(6, TOTAL_STEPS, "Email Configuration (Gmail)");
   info("Reports will be sent from your Gmail account using an App Password.");
   info("Generate one at: myaccount.google.com → Security → App Passwords\n");
 
@@ -410,7 +405,7 @@ async function setupEmailConfig(
 async function setupApplicantInfo(
   existing?: UserConfig["applicantInfo"]
 ): Promise<UserConfig["applicantInfo"]> {
-  header("Step 5 — Contact Info for Auto-Apply");
+  setupStepHeader(7, TOTAL_STEPS, "Contact Info");
   info("Used to fill application forms when auto-applying. Stored locally, never shared.\n");
 
   const email = await input({
@@ -440,7 +435,7 @@ async function setupApplicantInfo(
 // ─── Step 6: Output Configuration ───────────────────────────────────────────
 
 async function setupOutput(existing?: UserConfig["output"]): Promise<UserConfig["output"]> {
-  header("Step 6 — Output Configuration");
+  setupStepHeader(8, TOTAL_STEPS, "Output");
   info("Where should the agent save your daily job reports and tailored resumes?\n");
 
   const mode = await select({
@@ -607,32 +602,33 @@ function printReview(
     : `Google Drive (${output.resumeFormat})`;
   const salaryDesc = preferences.minBaseSalary
     ? `$${(preferences.minBaseSalary / 1000).toFixed(0)}k min base`
-    : "no minimum set";
+    : "no minimum";
   const emailDesc = preferences.emailReport
-    ? (emailConfig ? `→ ${emailConfig.toAddress}` : "enabled (email not configured)")
+    ? (emailConfig ? emailConfig.toAddress : "enabled — email not configured")
     : "disabled";
 
-  console.log(chalk.bold("\n  Review your configuration:\n"));
-  console.log(`  ${chalk.dim("0.")}  API Key        ${chalk.white(masked)}`);
-  console.log(`  ${chalk.dim("0b.")} Model          ${chalk.white(model)}`);
-  console.log(`  ${chalk.dim("1.")}  Resume         ${chalk.white(resume.parsedText.split(/\s+/).length + " words")}`);
-  console.log(`  ${chalk.dim("2.")}  Target Roles   ${chalk.white(roles.length + " roles: " + roles.slice(0, 2).join(", ") + (roles.length > 2 ? " ..." : ""))}`);
-  console.log(`  ${chalk.dim("3.")}  Company Types  ${chalk.white(companies.length + " types")}`);
-  console.log(`  ${chalk.dim("4.")}  Preferences    ${chalk.white(preferences.dailyRoleCount + " roles/day · " + salaryDesc + " · email " + emailDesc)}`);
-  console.log(`  ${chalk.dim("5.")}  Contact Info   ${chalk.white(applicantInfo.email + (applicantInfo.phone ? " · " + applicantInfo.phone : ""))}`);
-  console.log(`  ${chalk.dim("6.")}  Output         ${chalk.white(outputDesc)}`);
-  console.log();
+  reviewBox([
+    { label: "API Key",       value: masked },
+    { label: "Model",         value: model },
+    { label: "Resume",        value: resume.parsedText.split(/\s+/).length + " words" },
+    { label: "Target Roles",  value: roles.slice(0, 2).join(", ") + (roles.length > 2 ? ` +${roles.length - 2} more` : "") },
+    { label: "Company Types", value: companies.length + " types" },
+    { label: "Roles/Day",     value: String(preferences.dailyRoleCount) },
+    { label: "Min Salary",    value: salaryDesc },
+    { label: "Email Report",  value: emailDesc },
+    { label: "Contact",       value: applicantInfo.email + (applicantInfo.phone ? " · " + applicantInfo.phone : "") },
+    { label: "Output",        value: outputDesc },
+  ]);
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log(chalk.bold.cyan(`
-  ╔══════════════════════════════════════════╗
-  ║        job-search-agent  setup           ║
-  ║  AI-powered job search via Claude Code   ║
-  ╚══════════════════════════════════════════╝
-  `));
+  infoBox("job-search-agent  setup", [
+    chalk.dim("AI-powered job search via Claude · search, score, tailor, apply"),
+    "",
+    chalk.dim("You'll be guided through 8 steps. Press") + " Ctrl+C " + chalk.dim("at any time to exit.")
+  ]);
 
   // Allow Ctrl+C to exit cleanly at any point
   process.on("SIGINT", () => {
@@ -643,9 +639,8 @@ async function main() {
   const existing = await loadConfig();
 
   if (existing) {
-    console.log(chalk.yellow("  Existing configuration found. Running in update mode.\n"));
+    console.log(chalk.yellow("  ↻  Existing config found — running in update mode.\n"));
   }
-  info("Press Ctrl+C at any time to exit without saving.\n");
 
   // Run all steps once upfront
   let apiKey        = await setupApiKey(existing?.anthropicApiKey);
@@ -720,19 +715,15 @@ async function main() {
 
   await saveConfig(config);
 
-  console.log(chalk.bold.green(`
-  ✅  Setup complete!
-
-  Config saved to: ${CONFIG_PATH}
-
-  To run the agent:
-  ${chalk.cyan("npm run run")}
-
-  Commands:
-    npm run run     — search, tailor, and apply
-    npm run status  — view application tracker
-    npm run resume  — update your master resume
-  `));
+  successBox("Setup complete!", [
+    chalk.dim("Config saved to: ") + chalk.white(CONFIG_PATH),
+    "",
+    chalk.bold("Next step:") + "  " + chalk.cyan("npm run run") + chalk.dim("  — start your first job search"),
+    "",
+    chalk.dim("npm run status") + "   view application tracker",
+    chalk.dim("npm run resume") + "   update your master resume",
+    chalk.dim("npm run setup")  + "    change any setting",
+  ]);
 
   process.exit(0);
 }
