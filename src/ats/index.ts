@@ -1,14 +1,14 @@
 // src/ats/index.ts — orchestrates ATS detection + application routing
 
-import { detectATS, getATSLabel } from "./detector.js";
-import { applyLever } from "./lever.js";
-import { applyGreenhouse } from "./greenhouse.js";
-import { applyWorkday } from "./workday.js";
-import { JobResult } from "../tools/webSearch.js";
-import { UserConfig } from "../config/types.js";
+import { detectATS, getATSLabel } from "./detector";
+import { applyLever } from "./lever";
+import { applyGreenhouse } from "./greenhouse";
+import { applyWorkday } from "./workday";
+import { JobResult } from "../tools/webSearch";
+import { UserConfig } from "../config/types";
 import * as path from "path";
 import * as fs from "fs-extra";
-import { markApplied } from "../tracker/index.js";
+import { markApplied } from "../tracker/index";
 
 export interface ApplyOptions {
   config: UserConfig;

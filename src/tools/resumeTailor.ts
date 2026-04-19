@@ -1,7 +1,7 @@
 // src/tools/resumeTailor.ts — generate a tailored resume for a specific role
 
-import { ask } from "../utils/claude.js";
-import { JobResult } from "./webSearch.js";
+import { ask } from "../utils/claude";
+import { JobResult } from "./webSearch";
 
 export async function tailorResume(
   apiKey: string,

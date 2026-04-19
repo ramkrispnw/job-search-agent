@@ -1,7 +1,7 @@
 // src/tools/salaryResearch.ts — research comp range for each role
 
 import Anthropic from "@anthropic-ai/sdk";
-import { JobResult } from "./webSearch.js";
+import { JobResult } from "./webSearch";
 
 export interface SalaryData {
   role: string;

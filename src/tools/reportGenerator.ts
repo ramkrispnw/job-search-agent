@@ -1,8 +1,8 @@
 // src/tools/reportGenerator.ts — generate the daily jobs report markdown
 
 import { format } from "date-fns";
-import { JobResult } from "./webSearch.js";
-import { SalaryData, formatSalaryRange } from "./salaryResearch.js";
+import { JobResult } from "./webSearch";
+import { SalaryData, formatSalaryRange } from "./salaryResearch";
 
 export function generateJobsReport(
   jobs: JobResult[],

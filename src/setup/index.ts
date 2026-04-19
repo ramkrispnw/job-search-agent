@@ -5,11 +5,11 @@ import ora from "ora";
 import * as path from "path";
 import * as fs from "fs-extra";
 import { input, confirm, select, checkbox, editor } from "@inquirer/prompts";
-import { UserConfig, CONFIG_PATH, CONFIG_DIR } from "../config/types.js";
-import { parseResume, extractGoogleDocId, fetchGoogleDoc } from "../utils/resumeParser.js";
-import { ask } from "../utils/claude.js";
-import { saveConfig, loadConfig } from "../utils/config.js";
-import { getAuthClient, verifyFolderAccess } from "../tools/googleDrive.js";
+import { UserConfig, CONFIG_PATH, CONFIG_DIR } from "../config/types";
+import { parseResume, extractGoogleDocId, fetchGoogleDoc } from "../utils/resumeParser";
+import { ask } from "../utils/claude";
+import { saveConfig, loadConfig } from "../utils/config";
+import { getAuthClient, verifyFolderAccess } from "../tools/googleDrive";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 

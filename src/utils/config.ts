@@ -1,7 +1,7 @@
 // src/utils/config.ts — load and persist user config
 
 import * as fs from "fs-extra";
-import { UserConfig, CONFIG_PATH, CONFIG_DIR } from "../config/types.js";
+import { UserConfig, CONFIG_PATH, CONFIG_DIR } from "../config/types";
 
 export async function loadConfig(): Promise<UserConfig | null> {
   if (!(await fs.pathExists(CONFIG_PATH))) return null;

@@ -5,9 +5,9 @@ import ora from "ora";
 import * as path from "path";
 import * as fs from "fs-extra";
 import { select, input, editor } from "@inquirer/prompts";
-import { loadConfig, saveConfig } from "../utils/config.js";
-import { parseResume, extractGoogleDocId, fetchGoogleDoc } from "../utils/resumeParser.js";
-import { CONFIG_DIR } from "../config/types.js";
+import { loadConfig, saveConfig } from "../utils/config";
+import { parseResume, extractGoogleDocId, fetchGoogleDoc } from "../utils/resumeParser";
+import { CONFIG_DIR } from "../config/types";
 import { format } from "date-fns";
 
 function header(text: string) {

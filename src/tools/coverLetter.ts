@@ -1,7 +1,7 @@
 // src/tools/coverLetter.ts — generate a tailored cover letter per role
 
-import { ask } from "../utils/claude.js";
-import { JobResult } from "./webSearch.js";
+import { ask } from "../utils/claude";
+import { JobResult } from "./webSearch";
 
 export async function generateCoverLetter(
   apiKey: string,

@@ -1,7 +1,7 @@
 // src/tracker/index.ts — SQLite-based application tracker
 
 import * as path from "path";
-import { CONFIG_DIR } from "../config/types.js";
+import { CONFIG_DIR } from "../config/types";
 
 const DB_PATH = path.join(CONFIG_DIR, "applications.db");
 

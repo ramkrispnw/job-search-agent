@@ -3,9 +3,9 @@
 import * as fs from "fs-extra";
 import * as path from "path";
 import { format } from "date-fns";
-import { UserConfig } from "../config/types.js";
-import { getAuthClient, createFolder, uploadFile, uploadAsGoogleDoc, uploadDocxBuffer } from "./googleDrive.js";
-import { markdownToDocxBuffer } from "../utils/markdownToDocx.js";
+import { UserConfig } from "../config/types";
+import { getAuthClient, createFolder, uploadFile, uploadAsGoogleDoc, uploadDocxBuffer } from "./googleDrive";
+import { markdownToDocxBuffer } from "../utils/markdownToDocx";
 
 export interface OutputFile {
   name: string;

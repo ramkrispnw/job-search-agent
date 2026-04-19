@@ -7,16 +7,16 @@ import * as fs from "fs-extra";
 import { format } from "date-fns";
 import { confirm, select } from "@inquirer/prompts";
 
-import { loadConfig, configExists } from "../utils/config.js";
-import { searchJobsForProfile, JobResult } from "../tools/webSearch.js";
-import { tailorResume } from "../tools/resumeTailor.js";
-import { generateCoverLetter } from "../tools/coverLetter.js";
-import { researchSalary, formatSalaryRange, SalaryData } from "../tools/salaryResearch.js";
-import { generateJobsReport } from "../tools/reportGenerator.js";
-import { writeDailyOutput, OutputFile } from "../tools/outputWriter.js";
-import { applyToJob } from "../ats/index.js";
-import { upsertApplication, logRun, getStats } from "../tracker/index.js";
-import { CONFIG_DIR } from "../config/types.js";
+import { loadConfig, configExists } from "../utils/config";
+import { searchJobsForProfile, JobResult } from "../tools/webSearch";
+import { tailorResume } from "../tools/resumeTailor";
+import { generateCoverLetter } from "../tools/coverLetter";
+import { researchSalary, formatSalaryRange, SalaryData } from "../tools/salaryResearch";
+import { generateJobsReport } from "../tools/reportGenerator";
+import { writeDailyOutput, OutputFile } from "../tools/outputWriter";
+import { applyToJob } from "../ats/index";
+import { upsertApplication, logRun, getStats } from "../tracker/index";
+import { CONFIG_DIR } from "../config/types";
 
 function header(text: string) {
   console.log("\n" + chalk.bold.cyan("━".repeat(60)));

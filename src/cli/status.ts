@@ -2,7 +2,7 @@
 
 import chalk from "chalk";
 import { select } from "@inquirer/prompts";
-import { getAll, getPending, getStats, markStatus, AppStatus } from "../tracker/index.js";
+import { getAll, getPending, getStats, markStatus, AppStatus } from "../tracker/index";
 import { format, parseISO } from "date-fns";
 
 function statusColor(status: AppStatus): string {

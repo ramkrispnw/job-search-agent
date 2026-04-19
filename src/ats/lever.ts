@@ -1,6 +1,6 @@
 // src/ats/lever.ts — auto-apply to Lever job postings
 
-import { UserConfig } from "../config/types.js";
+import { UserConfig } from "../config/types";
 
 export interface ApplyPayload {
   name: string;
