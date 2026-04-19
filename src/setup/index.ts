@@ -804,72 +804,110 @@ async function main() {
 
   const existing = await loadConfig();
 
+  // ── Update mode: pick which sections to edit ──────────────────────────────
   if (existing) {
-    console.log(chalk.yellow("  ↻  Existing config found — running in update mode.\n"));
+    console.log(chalk.yellow("  ↻  Existing config found.\n"));
+
+    // Load all values from existing config upfront
+    let apiKey        = existing.anthropicApiKey;
+    let model         = existing.model;
+    let resume        = existing.resume;
+    let roles         = existing.targetRoles;
+    let companies     = existing.targetCompanyTypes;
+    let locations     = existing.targetLocations ?? [];
+    let preferences   = existing.preferences ?? { dailyRoleCount: 5, emailReport: false };
+    let applicantInfo = existing.applicantInfo;
+    let emailConfig   = existing.emailConfig;
+    let output        = existing.output;
+
+    const EDIT_CHOICES = [
+      { name: "✅  Save and finish", value: "save" },
+      { name: "─────────────────────────────", value: "sep", disabled: true },
+      { name: "  API key", value: "apiKey" },
+      { name: "  Model", value: "model" },
+      { name: "  Resume", value: "resume" },
+      { name: "  Target roles", value: "roles" },
+      { name: "  Target company types", value: "companies" },
+      { name: "  Preferred locations", value: "locations" },
+      { name: "  Preferences  (roles/day, salary, email report)", value: "preferences" },
+      { name: "  Contact info  (email, phone, LinkedIn, work auth)", value: "contact" },
+      { name: "  Email report settings", value: "email" },
+      { name: "  Output settings", value: "output" },
+      { name: "─────────────────────────────", value: "sep2", disabled: true },
+      { name: "✖  Exit without saving", value: "exit" },
+    ] as const;
+
+    while (true) {
+      printReview(apiKey, model, resume, roles, companies, locations, preferences, applicantInfo, emailConfig, output);
+
+      const action = await select({
+        message: "What would you like to edit?",
+        choices: EDIT_CHOICES as any
+      });
+
+      if (action === "save") break;
+      if (action === "exit") {
+        console.log(chalk.yellow("\n  Exited without saving.\n"));
+        process.exit(0);
+      }
+      if (action === "apiKey")      apiKey        = await setupApiKey(apiKey);
+      if (action === "model")       model         = await setupModel(model);
+      if (action === "resume")      resume        = await setupResume(apiKey, resume);
+      if (action === "roles")       roles         = await setupTargetRoles(apiKey, resume.parsedText, roles);
+      if (action === "companies")   companies     = await setupCompanyTypes(apiKey, resume.parsedText, companies);
+      if (action === "locations")   locations     = await setupLocations(locations);
+      if (action === "preferences") preferences   = await setupPreferences(preferences);
+      if (action === "contact")     applicantInfo = await setupApplicantInfo(applicantInfo);
+      if (action === "email")       emailConfig   = await setupEmailConfig(applicantInfo.email, emailConfig);
+      if (action === "output")      output        = await setupOutput(output);
+      if (action === "preferences" && preferences.emailReport && !emailConfig) {
+        emailConfig = await setupEmailConfig(applicantInfo.email);
+      }
+    }
+
+    const config: UserConfig = {
+      version: "1.0.0",
+      createdAt: existing.createdAt,
+      updatedAt: new Date().toISOString(),
+      resume, targetRoles: roles, targetCompanyTypes: companies, targetLocations: locations,
+      preferences, output, anthropicApiKey: apiKey, model, applicantInfo, emailConfig
+    };
+    await saveConfig(config);
+    await setupCron();
+    successBox("Settings saved!", [
+      chalk.dim("Config saved to: ") + chalk.white(CONFIG_PATH),
+      "",
+      chalk.bold("Run:") + "  " + chalk.cyan("npm run run") + chalk.dim("  — start a job search with updated settings"),
+    ]);
+    process.exit(0);
   }
 
-  // Run all steps once upfront
-  let apiKey        = await setupApiKey(existing?.anthropicApiKey);
-  let model         = await setupModel(existing?.model);
-  let resume        = await setupResume(apiKey, existing?.resume);
-  let roles         = await setupTargetRoles(apiKey, resume.parsedText, existing?.targetRoles);
-  let companies     = await setupCompanyTypes(apiKey, resume.parsedText, existing?.targetCompanyTypes);
-  let locations     = await setupLocations(existing?.targetLocations);
-  let preferences   = await setupPreferences(existing?.preferences);
-  let applicantInfo = await setupApplicantInfo(existing?.applicantInfo);
-  let emailConfig: UserConfig["emailConfig"] = existing?.emailConfig;
-  if (preferences.emailReport && !emailConfig) {
-    emailConfig = await setupEmailConfig(applicantInfo.email, existing?.emailConfig);
+  // ── First-time setup: run all steps in sequence ───────────────────────────
+  let apiKey        = await setupApiKey();
+  let model         = await setupModel();
+  let resume        = await setupResume(apiKey);
+  let roles         = await setupTargetRoles(apiKey, resume.parsedText);
+  let companies     = await setupCompanyTypes(apiKey, resume.parsedText);
+  let locations     = await setupLocations();
+  let preferences   = await setupPreferences();
+  let applicantInfo = await setupApplicantInfo();
+  let emailConfig: UserConfig["emailConfig"] = undefined;
+  if (preferences.emailReport) {
+    emailConfig = await setupEmailConfig(applicantInfo.email);
   }
-  let output        = await setupOutput(existing?.output);
+  let output        = await setupOutput();
 
-  // Review + edit loop
-  while (true) {
-    printReview(apiKey, model, resume, roles, companies, locations, preferences, applicantInfo, emailConfig, output);
-
-    const action = await select({
-      message: "Ready to save?",
-      choices: [
-        { name: "✅  Save and finish", value: "save" },
-        { name: "✏️   Edit API key", value: "apiKey" },
-        { name: "✏️   Edit model", value: "model" },
-        { name: "✏️   Edit resume", value: "resume" },
-        { name: "✏️   Edit target roles", value: "roles" },
-        { name: "✏️   Edit company types", value: "companies" },
-        { name: "✏️   Edit preferred locations", value: "locations" },
-        { name: "✏️   Edit preferences", value: "preferences" },
-        { name: "✏️   Edit contact info", value: "contact" },
-        { name: "✏️   Edit email settings", value: "email" },
-        { name: "✏️   Edit output settings", value: "output" },
-        { name: "✖   Exit without saving", value: "exit" },
-      ]
-    });
-
-    if (action === "save") break;
-    if (action === "exit") {
-      console.log(chalk.yellow("\n  Exited without saving. Run npm run setup to continue.\n"));
-      process.exit(0);
-    }
-    if (action === "apiKey")      apiKey        = await setupApiKey(apiKey);
-    if (action === "model")       model         = await setupModel(model);
-    if (action === "resume")      resume        = await setupResume(apiKey, resume);
-    if (action === "roles")       roles         = await setupTargetRoles(apiKey, resume.parsedText, roles);
-    if (action === "companies")   companies     = await setupCompanyTypes(apiKey, resume.parsedText, companies);
-    if (action === "locations")   locations     = await setupLocations(locations);
-    if (action === "preferences") preferences   = await setupPreferences(preferences);
-    if (action === "contact")     applicantInfo = await setupApplicantInfo(applicantInfo);
-    if (action === "email")       emailConfig   = await setupEmailConfig(applicantInfo.email, emailConfig);
-    if (action === "output")      output        = await setupOutput(output);
-
-    // If email report was just enabled and no config yet, prompt for it
-    if (action === "preferences" && preferences.emailReport && !emailConfig) {
-      emailConfig = await setupEmailConfig(applicantInfo.email);
-    }
+  // Review + confirm before saving (first-time setup)
+  printReview(apiKey, model, resume, roles, companies, locations, preferences, applicantInfo, emailConfig, output);
+  const confirmed = await confirm({ message: "Save and continue?", default: true });
+  if (!confirmed) {
+    console.log(chalk.yellow("\n  Exited without saving. Run npm run setup to continue.\n"));
+    process.exit(0);
   }
 
   const config: UserConfig = {
     version: "1.0.0",
-    createdAt: existing?.createdAt ?? new Date().toISOString(),
+    createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     resume,
     targetRoles: roles,
