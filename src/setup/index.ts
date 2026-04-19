@@ -13,7 +13,7 @@ import { getAuthClient, verifyFolderAccess } from "../tools/googleDrive";
 import { setupStepHeader, reviewBox, successBox, infoBox } from "../utils/ui";
 import { installCronJob, hasExistingCronJob, removeCronJob, describeSchedule, WEEKDAYS, CronSchedule, LOG_FILE } from "../utils/cronManager";
 
-const TOTAL_STEPS = 8;
+const TOTAL_STEPS = 9;
 
 function success(text: string) {
   console.log(chalk.green("  ✓ ") + text);
@@ -316,12 +316,61 @@ ${resumeText}`,
   return types;
 }
 
-// ─── Step 4: Preferences ─────────────────────────────────────────────────────
+// ─── Step 4: Target Locations ────────────────────────────────────────────────
+
+const PRESET_LOCATIONS = [
+  { name: "Remote",              value: "Remote" },
+  { name: "San Francisco, CA",   value: "San Francisco, CA" },
+  { name: "New York, NY",        value: "New York, NY" },
+  { name: "Seattle, WA",         value: "Seattle, WA" },
+  { name: "Austin, TX",          value: "Austin, TX" },
+  { name: "Boston, MA",          value: "Boston, MA" },
+  { name: "Los Angeles, CA",     value: "Los Angeles, CA" },
+  { name: "Chicago, IL",         value: "Chicago, IL" },
+  { name: "Denver, CO",          value: "Denver, CO" },
+  { name: "Miami, FL",           value: "Miami, FL" },
+  { name: "Washington, DC",      value: "Washington, DC" },
+  { name: "London, UK",          value: "London, UK" },
+  { name: "Toronto, Canada",     value: "Toronto, Canada" },
+];
+
+async function setupLocations(existing?: string[]): Promise<string[]> {
+  setupStepHeader(6, TOTAL_STEPS, "Preferred Locations");
+  info("Select all locations you're open to. Roles not matching will be filtered out.\n");
+
+  const { checkbox } = await import("@inquirer/prompts");
+
+  const presetSelected = await checkbox({
+    message: "Select preferred locations (space to select, enter to confirm):",
+    choices: PRESET_LOCATIONS.map(l => ({
+      ...l,
+      checked: existing ? existing.includes(l.value) : l.value === "Remote"
+    }))
+  });
+
+  const customStr = await input({
+    message: "Add custom locations (comma-separated, press Enter to skip):",
+    default: existing?.filter(l => !PRESET_LOCATIONS.map(p => p.value).includes(l)).join(", ") ?? ""
+  });
+
+  const custom = customStr.split(",").map(l => l.trim()).filter(Boolean);
+  const locations = [...new Set([...presetSelected, ...custom])];
+
+  if (locations.length === 0) {
+    console.log(chalk.yellow("  No locations selected — all locations will be considered.\n"));
+    return ["Remote", "Anywhere"];
+  }
+
+  success(`${locations.length} location(s): ${locations.join(", ")}`);
+  return locations;
+}
+
+// ─── Step 5: Preferences ─────────────────────────────────────────────────────
 
 async function setupPreferences(
   existing?: UserConfig["preferences"]
 ): Promise<UserConfig["preferences"]> {
-  setupStepHeader(6, TOTAL_STEPS, "Preferences");
+  setupStepHeader(7, TOTAL_STEPS, "Preferences");
 
   const { input: numberInput } = await import("@inquirer/prompts");
 
@@ -365,7 +414,7 @@ async function setupEmailConfig(
   applicantEmail: string,
   existing?: UserConfig["emailConfig"]
 ): Promise<UserConfig["emailConfig"]> {
-  setupStepHeader(6, TOTAL_STEPS, "Email Configuration (Gmail)");
+  setupStepHeader(7, TOTAL_STEPS, "Email Configuration (Gmail)");
   info("Reports will be sent from your Gmail account using an App Password.");
   info("Generate one at: myaccount.google.com → Security → App Passwords\n");
 
@@ -417,7 +466,7 @@ async function setupEmailConfig(
 async function setupApplicantInfo(
   existing?: UserConfig["applicantInfo"]
 ): Promise<UserConfig["applicantInfo"]> {
-  setupStepHeader(7, TOTAL_STEPS, "Contact Info");
+  setupStepHeader(8, TOTAL_STEPS, "Contact Info");
   info("Used to fill application forms when auto-applying. Stored locally, never shared.\n");
 
   const email = await input({
@@ -447,7 +496,7 @@ async function setupApplicantInfo(
 // ─── Step 6: Output Configuration ───────────────────────────────────────────
 
 async function setupOutput(existing?: UserConfig["output"]): Promise<UserConfig["output"]> {
-  setupStepHeader(8, TOTAL_STEPS, "Output");
+  setupStepHeader(9, TOTAL_STEPS, "Output");
   info("Where should the agent save your daily job reports and tailored resumes?\n");
 
   const mode = await select({
@@ -686,6 +735,7 @@ function printReview(
   resume: UserConfig["resume"],
   roles: string[],
   companies: string[],
+  locations: string[],
   preferences: UserConfig["preferences"],
   applicantInfo: UserConfig["applicantInfo"],
   emailConfig: UserConfig["emailConfig"] | undefined,
@@ -708,6 +758,7 @@ function printReview(
     { label: "Resume",        value: resume.parsedText.split(/\s+/).length + " words" },
     { label: "Target Roles",  value: roles.slice(0, 2).join(", ") + (roles.length > 2 ? ` +${roles.length - 2} more` : "") },
     { label: "Company Types", value: companies.length + " types" },
+    { label: "Locations",     value: locations.join(", ") },
     { label: "Roles/Day",     value: String(preferences.dailyRoleCount) },
     { label: "Min Salary",    value: salaryDesc },
     { label: "Email Report",  value: emailDesc },
@@ -743,6 +794,7 @@ async function main() {
   let resume        = await setupResume(apiKey, existing?.resume);
   let roles         = await setupTargetRoles(apiKey, resume.parsedText, existing?.targetRoles);
   let companies     = await setupCompanyTypes(apiKey, resume.parsedText, existing?.targetCompanyTypes);
+  let locations     = await setupLocations(existing?.targetLocations);
   let preferences   = await setupPreferences(existing?.preferences);
   let applicantInfo = await setupApplicantInfo(existing?.applicantInfo);
   let emailConfig: UserConfig["emailConfig"] = existing?.emailConfig;
@@ -753,7 +805,7 @@ async function main() {
 
   // Review + edit loop
   while (true) {
-    printReview(apiKey, model, resume, roles, companies, preferences, applicantInfo, emailConfig, output);
+    printReview(apiKey, model, resume, roles, companies, locations, preferences, applicantInfo, emailConfig, output);
 
     const action = await select({
       message: "Ready to save?",
@@ -764,6 +816,7 @@ async function main() {
         { name: "✏️   Edit resume", value: "resume" },
         { name: "✏️   Edit target roles", value: "roles" },
         { name: "✏️   Edit company types", value: "companies" },
+        { name: "✏️   Edit preferred locations", value: "locations" },
         { name: "✏️   Edit preferences", value: "preferences" },
         { name: "✏️   Edit contact info", value: "contact" },
         { name: "✏️   Edit email settings", value: "email" },
@@ -782,6 +835,7 @@ async function main() {
     if (action === "resume")      resume        = await setupResume(apiKey, resume);
     if (action === "roles")       roles         = await setupTargetRoles(apiKey, resume.parsedText, roles);
     if (action === "companies")   companies     = await setupCompanyTypes(apiKey, resume.parsedText, companies);
+    if (action === "locations")   locations     = await setupLocations(locations);
     if (action === "preferences") preferences   = await setupPreferences(preferences);
     if (action === "contact")     applicantInfo = await setupApplicantInfo(applicantInfo);
     if (action === "email")       emailConfig   = await setupEmailConfig(applicantInfo.email, emailConfig);
@@ -800,6 +854,7 @@ async function main() {
     resume,
     targetRoles: roles,
     targetCompanyTypes: companies,
+    targetLocations: locations,
     preferences,
     output,
     anthropicApiKey: apiKey,

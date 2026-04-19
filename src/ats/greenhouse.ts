@@ -131,25 +131,74 @@ export async function applyGreenhouse(
       await fillField(page, SELECTORS.linkedin, payload.linkedinUrl);
     }
 
-    // Screenshot before submit (useful for debugging)
-    const screenshotPath = `/tmp/greenhouse-apply-${Date.now()}.png`;
-    await page.screenshot({ path: screenshotPath, fullPage: true });
+    // Detect required fields that are still empty — report them before attempting submit
+    const validationIssues: string[] = await page.evaluate(() => {
+      const issues: string[] = [];
+      const required = Array.from(document.querySelectorAll("[required], [aria-required='true']"));
+      for (const el of required as HTMLElement[]) {
+        const inp = el as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+        if (!inp.value || inp.value.trim() === "") {
+          const label = document.querySelector(`label[for='${inp.id}']`)?.textContent?.trim()
+            ?? (inp as HTMLInputElement).placeholder ?? inp.name ?? "unknown field";
+          if (!issues.includes(label)) issues.push(label);
+        }
+      }
+      return issues;
+    });
+    if (validationIssues.length > 0) {
+      console.warn("  [Greenhouse] Required fields still empty:", validationIssues.join(", "));
+    }
 
     // Submit
     const submitBtn = await tryClick(page, SELECTORS.submit);
     if (!submitBtn) throw new Error("Could not find Submit button");
 
     await submitBtn.click();
-    await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 20000 }).catch(() => {});
 
+    // Wait for either navigation or an in-page confirmation
+    await Promise.race([
+      page.waitForNavigation({ waitUntil: "networkidle2", timeout: 20000 }),
+      page.waitForSelector(
+        "[data-qa='application-confirmation'], .application-confirmation, #confirmation, .confirmation",
+        { timeout: 20000 }
+      )
+    ]).catch(() => {});
+
+    await sleep(1500);
+
+    // Screenshot AFTER submit for debugging
+    const screenshotPath = `/tmp/greenhouse-apply-${Date.now()}.png`;
+    await page.screenshot({ path: screenshotPath, fullPage: true });
+
+    const finalUrl = page.url();
     const pageText: string = await page.evaluate(() => (document as any).body.innerText);
-    const succeeded = pageText.toLowerCase().includes("thank") ||
-                      pageText.toLowerCase().includes("application submitted") ||
-                      pageText.toLowerCase().includes("application received");
+    const textLower = pageText.toLowerCase();
 
-    if (!succeeded) throw new Error("Could not confirm Greenhouse submission — check screenshot at " + screenshotPath);
+    const succeeded =
+      textLower.includes("thank") ||
+      textLower.includes("application submitted") ||
+      textLower.includes("application received") ||
+      textLower.includes("successfully submitted") ||
+      textLower.includes("we've received your application") ||
+      textLower.includes("your application has been") ||
+      textLower.includes("we received your application") ||
+      finalUrl.includes("/confirmation") ||
+      finalUrl.includes("/submitted") ||
+      finalUrl.includes("/success");
 
-    return { success: true, url: page.url(), screenshotPath };
+    if (!succeeded) {
+      // Check for visible validation errors on the page
+      const errorText: string = await page.evaluate(() => {
+        const errs = Array.from(document.querySelectorAll(
+          ".error, .field-error, [class*='error'], [aria-invalid='true'] + *, .invalid-feedback"
+        ));
+        return errs.map((e: any) => e.textContent?.trim()).filter(Boolean).slice(0, 3).join("; ");
+      });
+      const hint = errorText ? ` Validation errors: ${errorText}` : "";
+      throw new Error(`Could not confirm Greenhouse submission.${hint} Screenshot: ${screenshotPath}`);
+    }
+
+    return { success: true, url: finalUrl, screenshotPath };
 
   } catch (err: any) {
     return { success: false, url: jobUrl, error: err.message };

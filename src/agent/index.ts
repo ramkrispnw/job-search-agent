@@ -33,7 +33,7 @@ async function main() {
   }
 
   const config = (await loadConfig())!;
-  const { resume, targetRoles, targetCompanyTypes, anthropicApiKey, model, output } = config;
+  const { resume, targetRoles, targetCompanyTypes, targetLocations = [], anthropicApiKey, model, output } = config;
   const preferences = config.preferences ?? { dailyRoleCount: 5, emailReport: false };
   const roleCount = preferences.dailyRoleCount ?? 5;
   const minBaseSalary = preferences.minBaseSalary;
@@ -52,6 +52,7 @@ async function main() {
     { label: "Candidate",  value: candidateName },
     { label: "Model",      value: model },
     { label: "Roles/day",  value: String(roleCount) + (minBaseSalary ? `  ·  Min base $${(minBaseSalary/1000).toFixed(0)}k` : "") },
+    { label: "Locations",  value: targetLocations.length > 0 ? targetLocations.join(", ") : "Any" },
     { label: "Output",     value: output.mode === "local" ? `Local → ${output.localPath}` : `Google Drive (${output.resumeFormat})` },
     ...(lifetimeStr ? [{ label: "Lifetime", value: lifetimeStr }] : []),
   ]);
@@ -74,14 +75,33 @@ async function main() {
   const searchSpinner = ora(`Searching the web for ${roleCount} best-fit openings...`).start();
   let jobs: JobResult[];
   try {
-    jobs = await searchJobsForProfile(anthropicApiKey, resume.parsedText, targetRoles, targetCompanyTypes, model, previousRoles, roleCount);
+    jobs = await searchJobsForProfile(anthropicApiKey, resume.parsedText, targetRoles, targetCompanyTypes, model, previousRoles, roleCount, targetLocations);
     searchSpinner.succeed(`Found ${jobs.length} matching roles`);
   } catch (err: any) {
     searchSpinner.fail(`Search failed: ${err.message}`);
     process.exit(1);
   }
 
-  const sortedJobs = jobs.sort((a, b) => b.alignmentScore - a.alignmentScore);
+  // Filter by location if preferences are set
+  let filteredJobs = jobs;
+  if (targetLocations.length > 0 && !targetLocations.includes("Anywhere")) {
+    const lowerLocs = targetLocations.map(l => l.toLowerCase());
+    const wantsRemote = lowerLocs.includes("remote");
+    filteredJobs = jobs.filter(j => {
+      const jLoc = j.location.toLowerCase();
+      if (wantsRemote && (jLoc.includes("remote") || jLoc.includes("anywhere"))) return true;
+      return lowerLocs.some(l => jLoc.includes(l.split(",")[0].toLowerCase()));
+    });
+    if (filteredJobs.length < jobs.length) {
+      console.log(chalk.dim(`  Filtered to ${filteredJobs.length} role(s) matching location prefs (${targetLocations.join(", ")})\n`));
+    }
+    if (filteredJobs.length === 0) {
+      console.log(chalk.yellow("  No roles matched your location preferences — showing all results.\n"));
+      filteredJobs = jobs;
+    }
+  }
+
+  const sortedJobs = filteredJobs.sort((a, b) => b.alignmentScore - a.alignmentScore);
 
   // ── Step 3: Shortlist ─────────────────────────────────────────────────────
   agentHeader(3, TOTAL_STEPS, `Top ${roleCount} Shortlisted Roles`);

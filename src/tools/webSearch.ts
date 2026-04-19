@@ -19,12 +19,17 @@ export async function searchJobsForProfile(
   targetCompanyTypes: string[],
   model: string,
   excludeRoles: Array<{ company: string; title: string }> = [],
-  roleCount = 5
+  roleCount = 5,
+  targetLocations: string[] = []
 ): Promise<JobResult[]> {
   const client = new Anthropic({ apiKey });
 
   const exclusionNote = excludeRoles.length > 0
     ? `\n## Already Recommended — Do NOT suggest these roles again\n${excludeRoles.map(r => `- ${r.title} at ${r.company}`).join("\n")}\n`
+    : "";
+
+  const locationNote = targetLocations.length > 0
+    ? `\n## Location Requirements (IMPORTANT)\nOnly return roles that are in one of these locations:\n${targetLocations.map(l => `- ${l}`).join("\n")}\nIf "Remote" is listed, also include roles explicitly labeled as remote-first or fully-remote.\nDo NOT return roles in other locations.\n`
     : "";
 
   const searchPrompt = `
@@ -39,12 +44,13 @@ ${targetRoles.join(", ")}
 
 ## Target Company Types
 ${targetCompanyTypes.join(", ")}
-${exclusionNote}
+${locationNote}${exclusionNote}
 ## Your Task
 1. Search for current open positions matching the candidate's profile
 2. Find roles at companies matching their target company types
 3. Look for positions posted in the last 30 days where possible
 4. Select the best-fit roles — never suggest a role from the exclusion list above (same company + same title)
+5. Only return roles that match the Location Requirements above
 
 ## URL Requirements (IMPORTANT)
 For the job URL, always prefer the direct ATS application link in this priority order:
