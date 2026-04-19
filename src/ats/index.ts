@@ -29,6 +29,7 @@ export interface ApplyResult {
   error?: string;
   skipped?: boolean;
   skipReason?: string;
+  needsEmailVerification?: boolean;
 }
 
 export async function applyToJob(options: ApplyOptions): Promise<ApplyResult> {

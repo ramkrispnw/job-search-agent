@@ -285,7 +285,14 @@ async function main() {
 
         if (result.skipped) apSpin.warn(`  ${job.company}: ${result.skipReason}`);
         else if (result.success) apSpin.succeed(`  ✓ Applied to ${job.company} via ${result.atsType}`);
-        else { apSpin.fail(`  ✗ ${job.company}: ${result.error}`); console.log(chalk.dim(`    Manual: ${job.url}`)); }
+        else if ((result as any).needsEmailVerification) {
+          apSpin.warn(`  ${job.company}: Greenhouse sent a security code to your email`);
+          console.log(chalk.yellow(`    ↳ Check your inbox, enter the code, and resubmit at:`));
+          console.log(chalk.cyan(`      ${job.url}`));
+        } else {
+          apSpin.fail(`  ✗ ${job.company}: ${result.error}`);
+          console.log(chalk.dim(`    Manual: ${job.url}`));
+        }
       }
     }
   } else {
