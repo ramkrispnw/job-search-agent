@@ -1,6 +1,9 @@
 // src/tools/salaryResearch.ts — research comp range for each role
 
 import Anthropic from "@anthropic-ai/sdk";
+import * as https from "https";
+import * as http from "http";
+import { ask } from "../utils/claude";
 import { JobResult } from "./webSearch";
 
 export interface SalaryData {
@@ -15,105 +18,154 @@ export interface SalaryData {
   notes: string;
 }
 
-const FALLBACK: (job: JobResult, notes: string) => SalaryData = (job, notes) => ({
+const FALLBACK = (job: JobResult, notes: string): SalaryData => ({
   role: job.title, company: job.company,
   baseLow: 0, baseHigh: 0, tcLow: 0, tcHigh: 0,
   currency: "USD", sources: [], notes
 });
+
+// ─── Fetch job page text ──────────────────────────────────────────────────────
+
+async function fetchPageText(url: string, maxBytes = 80_000): Promise<string> {
+  return new Promise((resolve) => {
+    const get = (targetUrl: string, redirects = 0) => {
+      if (redirects > 5) return resolve("");
+      const lib = targetUrl.startsWith("https") ? https : http;
+      const req = lib.get(targetUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (compatible; job-search-agent/2.0)",
+          "Accept": "text/html,application/xhtml+xml"
+        }
+      }, (res) => {
+        if ([301, 302, 307, 308].includes(res.statusCode ?? 0) && res.headers.location) {
+          return get(res.headers.location, redirects + 1);
+        }
+        if ((res.statusCode ?? 0) >= 400) return resolve("");
+
+        const chunks: Buffer[] = [];
+        let total = 0;
+        res.on("data", (chunk: Buffer) => {
+          total += chunk.length;
+          chunks.push(chunk);
+          if (total >= maxBytes) req.destroy();
+        });
+        res.on("end", () => {
+          const html = Buffer.concat(chunks).toString("utf8");
+          // Strip tags, collapse whitespace
+          const text = html
+            .replace(/<script[\s\S]*?<\/script>/gi, " ")
+            .replace(/<style[\s\S]*?<\/style>/gi, " ")
+            .replace(/<[^>]+>/g, " ")
+            .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+            .replace(/&nbsp;/g, " ").replace(/&#\d+;/g, " ")
+            .replace(/\s{3,}/g, "\n\n")
+            .trim()
+            .slice(0, 6000);  // keep first ~6k chars — salary is usually near the top
+          resolve(text);
+        });
+        res.on("error", () => resolve(""));
+      });
+      req.setTimeout(8000, () => { req.destroy(); resolve(""); });
+      req.on("error", () => resolve(""));
+    };
+    get(url);
+  });
+}
+
+// ─── Parse JSON from Claude response ─────────────────────────────────────────
+
+function parseSalaryJson(raw: string, job: JobResult): SalaryData | null {
+  const cleaned = raw.replace(/```json|```/g, "").trim();
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start === -1) return null;
+  try {
+    return JSON.parse(cleaned.slice(start, end + 1)) as SalaryData;
+  } catch {
+    return null;
+  }
+}
+
+const JSON_SCHEMA = `{
+  "role": "...",
+  "company": "...",
+  "baseLow": 180000,
+  "baseHigh": 220000,
+  "tcLow": 280000,
+  "tcHigh": 380000,
+  "currency": "USD",
+  "sources": ["job posting"],
+  "notes": "brief note"
+}`;
+
+// ─── Main export ──────────────────────────────────────────────────────────────
 
 export async function researchSalary(
   apiKey: string,
   job: JobResult,
   model: string
 ): Promise<SalaryData> {
-  const client = new Anthropic({ apiKey });
+  // 1. Fetch the job posting page and try to extract salary from it
+  const pageText = await fetchPageText(job.url);
 
-  const prompt = `
-Research the compensation range for this specific role. Use web search to find:
-- Levels.fyi data for ${job.company} if available
-- Glassdoor / LinkedIn salary data
-- Recent job postings with disclosed salary bands
-- Any public comp data for ${job.title} at ${job.company} or comparable companies
+  if (pageText) {
+    const hasSalary = /\$[\d,]+|\d{2,3}[kK]\s*[-–]\s*\d{2,3}[kK]|salary|compensation|pay range/i.test(pageText);
+
+    if (hasSalary) {
+      const extractPrompt = `
+Extract the salary / compensation information from this job posting text.
 
 Role: ${job.title}
 Company: ${job.company}
 Location: ${job.location}
 
-Return ONLY a JSON object with this structure:
-{
-  "role": "${job.title}",
-  "company": "${job.company}",
-  "baseLow": 180000,
-  "baseHigh": 220000,
-  "tcLow": 280000,
-  "tcHigh": 380000,
-  "currency": "USD",
-  "sources": ["levels.fyi", "glassdoor"],
-  "notes": "Senior IC range at FAANG-tier; equity vest 4yr cliff"
-}
+Job posting text:
+${pageText}
 
-Use round numbers. If data is unavailable, estimate from comparable companies and note it.
-Return ONLY the JSON object, no other text.
-`;
+Return ONLY a JSON object. Use 0 for any field you cannot determine.
+${JSON_SCHEMA}
 
-  const messages: Anthropic.MessageParam[] = [{ role: "user", content: prompt }];
-  const retries = 4;
-  let lastError: any;
+Return ONLY the JSON, no other text.`;
 
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      const response = await client.messages.create({
-        model,
-        max_tokens: 1024,
-        tools: [{ type: "web_search_20250305", name: "web_search" } as any],
-        messages
-      });
+      const raw = await ask(apiKey, extractPrompt,
+        "You extract structured salary data from job postings.",
+        400, model, 2);
 
-      // Handle multi-turn: if Claude used the web_search tool, send back tool results
-      if (response.stop_reason === "tool_use") {
-        const toolUseBlocks = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
-        messages.push({ role: "assistant", content: response.content });
-        messages.push({
-          role: "user",
-          content: toolUseBlocks.map(b => ({
-            type: "tool_result" as const,
-            tool_use_id: b.id,
-            content: "Search completed."
-          }))
-        });
-        continue; // loop back to get final text response
+      const parsed = parseSalaryJson(raw, job);
+      if (parsed && parsed.baseLow > 0) {
+        parsed.sources = ["job posting"];
+        return parsed;
       }
-
-      let rawText = "";
-      for (const block of response.content) {
-        if (block.type === "text") rawText += block.text;
-      }
-
-      const cleaned = rawText.replace(/```json|```/g, "").trim();
-      const start = cleaned.indexOf("{");
-      const end = cleaned.lastIndexOf("}");
-      if (start === -1) return FALLBACK(job, "Could not parse salary data");
-
-      return JSON.parse(cleaned.slice(start, end + 1)) as SalaryData;
-
-    } catch (err: any) {
-      lastError = err;
-      const isRateLimit = err?.status === 429 || err?.message?.includes("rate_limit");
-      if (isRateLimit && attempt < retries) {
-        const retryAfter = err?.headers?.["retry-after"];
-        const delay = retryAfter
-          ? parseInt(retryAfter, 10) * 1000
-          : Math.min(60000, 15000 * Math.pow(2, attempt));
-        await new Promise(res => setTimeout(res, delay));
-        continue;
-      }
-      throw err;
     }
   }
-  throw lastError;
+
+  // 2. Fall back to Claude's training knowledge — no web search, fast
+  const estimatePrompt = `
+Estimate the compensation range for this role based on your knowledge of the industry and company.
+Do NOT search the web — use your training knowledge only.
+
+Role: ${job.title}
+Company: ${job.company}
+Location: ${job.location}
+
+Use typical ranges for this type of role at this company or comparable companies.
+If the company is well-known (e.g. OpenAI, Anthropic, Google, Meta), use their known ranges.
+Otherwise, estimate from comparable companies.
+
+Return ONLY a JSON object:
+${JSON_SCHEMA}
+
+Set sources to ["estimated"]. Return ONLY the JSON, no other text.`;
+
+  const raw = await ask(apiKey, estimatePrompt,
+    "You are a compensation expert with knowledge of tech industry salary ranges.",
+    400, model, 2);
+
+  return parseSalaryJson(raw, job) ?? FALLBACK(job, "Could not estimate");
 }
 
 export function formatSalaryRange(data: SalaryData): string {
   const fmt = (n: number) => n > 0 ? `$${(n / 1000).toFixed(0)}k` : "N/A";
-  return `Base: ${fmt(data.baseLow)}–${fmt(data.baseHigh)} | TC: ${fmt(data.tcLow)}–${fmt(data.tcHigh)}`;
+  const source = data.sources.includes("job posting") ? " 📄" : data.sources.includes("estimated") ? " ~" : "";
+  return `Base: ${fmt(data.baseLow)}–${fmt(data.baseHigh)} | TC: ${fmt(data.tcLow)}–${fmt(data.tcHigh)}${source}`;
 }

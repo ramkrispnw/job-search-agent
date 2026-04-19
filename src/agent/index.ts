@@ -93,23 +93,27 @@ async function main() {
     console.log(chalk.dim(`     ${job.url}\n`));
   });
 
-  // ── Step 4: Salary Research ───────────────────────────────────────────────
+  // ── Step 4: Salary Research (parallel) ───────────────────────────────────
   agentHeader(4, TOTAL_STEPS, "Researching Salary Ranges");
-  const salaryData: SalaryData[] = [];
-  for (const job of sortedJobs) {
-    const sp = ora(`  ${job.company}...`).start();
-    try {
-      const s = await researchSalary(anthropicApiKey, job, model);
-      salaryData.push(s);
+  const salarySpinners = sortedJobs.map(job => ora(`  ${job.company}...`).start());
+  const salaryResults = await Promise.allSettled(
+    sortedJobs.map(job => researchSalary(anthropicApiKey, job, model))
+  );
+  const salaryData: SalaryData[] = salaryResults.map((result, i) => {
+    const job = sortedJobs[i];
+    const sp = salarySpinners[i];
+    if (result.status === "fulfilled") {
+      const s = result.value;
       const flag = minBaseSalary && s.baseHigh > 0 && s.baseHigh < minBaseSalary
         ? chalk.red(` ⚠ below min $${(minBaseSalary/1000).toFixed(0)}k`)
         : "";
       sp.succeed(`  ${job.company}: ${formatSalaryRange(s)}${flag}`);
-    } catch {
-      salaryData.push({ role: job.title, company: job.company, baseLow: 0, baseHigh: 0, tcLow: 0, tcHigh: 0, currency: "USD", sources: [], notes: "Unavailable" });
+      return s;
+    } else {
       sp.warn(`  ${job.company}: data unavailable`);
+      return { role: job.title, company: job.company, baseLow: 0, baseHigh: 0, tcLow: 0, tcHigh: 0, currency: "USD", sources: [], notes: "Unavailable" };
     }
-  }
+  });
 
   // ── Step 4b: Application Requirements ────────────────────────────────────
   agentHeader(5, TOTAL_STEPS, "Application Requirements");
