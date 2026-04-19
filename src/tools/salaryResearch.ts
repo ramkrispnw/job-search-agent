@@ -30,15 +30,25 @@ async function fetchPageText(url: string, maxBytes = 80_000): Promise<string> {
   return new Promise((resolve) => {
     const get = (targetUrl: string, redirects = 0) => {
       if (redirects > 5) return resolve("");
-      const lib = targetUrl.startsWith("https") ? https : http;
-      const req = lib.get(targetUrl, {
+      // Resolve relative redirect URLs against the current URL
+      let resolvedUrl: string;
+      try {
+        resolvedUrl = new URL(targetUrl).href;
+      } catch {
+        return resolve(""); // unparseable URL — give up
+      }
+      const lib = resolvedUrl.startsWith("https") ? https : http;
+      const req = lib.get(resolvedUrl, {
         headers: {
           "User-Agent": "Mozilla/5.0 (compatible; job-search-agent/2.0)",
           "Accept": "text/html,application/xhtml+xml"
         }
       }, (res) => {
         if ([301, 302, 307, 308].includes(res.statusCode ?? 0) && res.headers.location) {
-          return get(res.headers.location, redirects + 1);
+          const location = res.headers.location;
+          // Resolve relative locations against the current URL
+          const next = location.startsWith("http") ? location : new URL(location, resolvedUrl).href;
+          return get(next, redirects + 1);
         }
         if ((res.statusCode ?? 0) >= 400) return resolve("");
 
