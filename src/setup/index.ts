@@ -738,6 +738,11 @@ async function main() {
 }
 
 main().catch((err) => {
+  // @inquirer/prompts v8 throws ExitPromptError on Ctrl+C — treat as clean exit
+  if (err?.name === "ExitPromptError" || err?.constructor?.name === "ExitPromptError") {
+    console.log(chalk.yellow("\n\n  Setup cancelled. Run npm run setup to continue.\n"));
+    process.exit(0);
+  }
   console.error(chalk.red("\n  Error: " + err.message));
   process.exit(1);
 });
