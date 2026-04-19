@@ -4,6 +4,7 @@ import chalk from "chalk";
 import { select } from "@inquirer/prompts";
 import { getAll, getPending, getStats, markStatus, AppStatus } from "../tracker/index";
 import { format, parseISO } from "date-fns";
+import { infoBox, dashboardBox } from "../utils/ui";
 
 function statusColor(status: AppStatus): string {
   const colors: Record<AppStatus, (s: string) => string> = {
@@ -23,35 +24,31 @@ function fmtDate(iso?: string): string {
 }
 
 async function main() {
-  console.log(chalk.bold.cyan(`
-  ╔══════════════════════════════════════════╗
-  ║       job-search-agent  status           ║
-  ╚══════════════════════════════════════════╝
-  `));
-
   let apps;
   try {
     apps = getAll();
   } catch {
-    console.log(chalk.yellow("  No applications tracked yet. Run the agent first:\n  npm run run\n"));
+    infoBox("job-search-agent  status", [
+      chalk.yellow("No applications tracked yet."),
+      chalk.dim("Run the agent first: ") + chalk.white("npm run run")
+    ]);
     process.exit(0);
   }
 
   if (apps.length === 0) {
-    console.log(chalk.dim("  No applications on record yet.\n"));
+    infoBox("job-search-agent  status", [chalk.dim("No applications on record yet.")]);
     process.exit(0);
   }
 
-  // ── Stats bar ─────────────────────────────────────────────────────────────
+  // ── Stats dashboard ───────────────────────────────────────────────────────
   const stats = getStats();
-  console.log(
-    chalk.bold("  Totals: ") +
-    `${stats.total} tracked  ·  ` +
-    chalk.blue(`${stats.applied} applied`) + "  ·  " +
-    chalk.green(`${stats.interviewing} interviewing`) + "  ·  " +
-    chalk.bold.green(`${stats.offers} offers`) + "  ·  " +
-    chalk.yellow(`${stats.responseRate} response rate`) + "\n"
-  );
+  dashboardBox("Application Tracker", [
+    { label: "Total tracked",  value: String(stats.total) },
+    { label: "Applied",        value: chalk.blue(String(stats.applied)) },
+    { label: "Interviewing",   value: chalk.green(String(stats.interviewing)) },
+    { label: "Offers",         value: chalk.bold.green(String(stats.offers)) },
+    { label: "Response rate",  value: chalk.yellow(stats.responseRate) },
+  ]);
 
   // ── Table ─────────────────────────────────────────────────────────────────
   const cols = [
@@ -133,6 +130,7 @@ async function main() {
 }
 
 main().catch((err) => {
+  if (err?.name === "ExitPromptError" || err?.constructor?.name === "ExitPromptError") process.exit(0);
   console.error(chalk.red("\n  Error: " + err.message));
   process.exit(1);
 });

@@ -16,6 +16,62 @@ export interface ApplyResult {
   screenshotPath?: string;
 }
 
+// Selectors to try for each field — Greenhouse has two form variants:
+// boards.greenhouse.io (older) and job-boards.greenhouse.io (newer)
+const SELECTORS = {
+  firstName: ["#first_name", "input[name='first_name']", "input[autocomplete='given-name']"],
+  lastName:  ["#last_name",  "input[name='last_name']",  "input[autocomplete='family-name']"],
+  email:     ["#email",      "input[name='email']",       "input[type='email']"],
+  phone:     ["#phone",      "input[name='phone']",       "input[type='tel']"],
+  resume:    [
+    "input[data-qa='resume-upload-input']",
+    "input[type='file'][name='resume']",
+    "input[type='file'][id='resume']",
+    "input[type='file'][accept*='pdf']",
+    "input[type='file']"
+  ],
+  coverLetter: [
+    "textarea#cover_letter",
+    "textarea[name='cover_letter']",
+    "textarea[data-qa='cover_letter']"
+  ],
+  linkedin: [
+    "input[placeholder*='LinkedIn']",
+    "input[id*='linkedin']",
+    "input[name*='linkedin']"
+  ],
+  submit: [
+    "input[type='submit'][id='submit_app']",
+    "button[type='submit'][data-qa='btn-submit']",
+    "button[type='submit']",
+    "input[type='submit']"
+  ]
+};
+
+async function tryClick(page: any, selectors: string[]): Promise<any> {
+  for (const sel of selectors) {
+    const el = await page.$(sel);
+    if (el) return el;
+  }
+  return null;
+}
+
+async function fillField(page: any, selectors: string[], value: string): Promise<boolean> {
+  for (const sel of selectors) {
+    const el = await page.$(sel);
+    if (el) {
+      await el.click({ clickCount: 3 });
+      await el.type(value);
+      return true;
+    }
+  }
+  return false;
+}
+
+async function sleep(ms: number) {
+  return new Promise(res => setTimeout(res, ms));
+}
+
 export async function applyGreenhouse(
   jobUrl: string,
   payload: ApplyPayload,
@@ -31,81 +87,67 @@ export async function applyGreenhouse(
 
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 900 });
-    await page.goto(jobUrl, { waitUntil: "networkidle2", timeout: 30000 });
+    await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
 
-    // Greenhouse has a consistent form structure
-    // First name / Last name (split)
+    await page.goto(jobUrl, { waitUntil: "networkidle2", timeout: 45000 });
+
+    // Wait for the form to appear
+    await page.waitForSelector("form, #application-form, [data-qa='application-form']", { timeout: 15000 }).catch(() => {});
+    await sleep(1500);
+
+    // Name
     const [firstName, ...rest] = payload.name.split(" ");
     const lastName = rest.join(" ") || "";
+    await fillField(page, SELECTORS.firstName, firstName);
+    await fillField(page, SELECTORS.lastName, lastName);
 
-    const firstNameField = await page.$("#first_name");
-    const lastNameField  = await page.$("#last_name");
+    // Email + Phone
+    await fillField(page, SELECTORS.email, payload.email);
+    if (payload.phone) await fillField(page, SELECTORS.phone, payload.phone);
 
-    if (firstNameField) {
-      await firstNameField.click({ clickCount: 3 });
-      await firstNameField.type(firstName);
+    // Resume upload — find the file input
+    let resumeInput: any = null;
+    for (const sel of SELECTORS.resume) {
+      resumeInput = await page.$(sel);
+      if (resumeInput) break;
     }
-    if (lastNameField) {
-      await lastNameField.click({ clickCount: 3 });
-      await lastNameField.type(lastName);
+    if (!resumeInput) {
+      // Last resort: any file input on the page
+      const allFileInputs = await page.$$("input[type='file']");
+      if (allFileInputs.length > 0) resumeInput = allFileInputs[0];
     }
-
-    // Email
-    const emailField = await page.$("#email");
-    if (emailField) {
-      await emailField.click({ clickCount: 3 });
-      await emailField.type(payload.email);
-    }
-
-    // Phone
-    if (payload.phone) {
-      const phoneField = await page.$("#phone");
-      if (phoneField) {
-        await phoneField.click({ clickCount: 3 });
-        await phoneField.type(payload.phone);
-      }
-    }
-
-    // Resume upload — Greenhouse uses a specific input
-    const resumeInput = await page.$('input[type="file"][name*="resume"], #resume');
     if (!resumeInput) throw new Error("Could not find resume upload field");
+
     await resumeInput.uploadFile(payload.resumePath);
-    await page.waitForTimeout(2000);
+    await sleep(2000);
 
-    // Cover letter — sometimes a textarea, sometimes file upload
+    // Cover letter
     if (payload.coverLetter) {
-      const clTextarea = await page.$("textarea#cover_letter, textarea[name='cover_letter']");
-      if (clTextarea) {
-        await clTextarea.click({ clickCount: 3 });
-        await clTextarea.type(payload.coverLetter.slice(0, 5000));
-      }
+      await fillField(page, SELECTORS.coverLetter, payload.coverLetter.slice(0, 5000));
     }
 
-    // LinkedIn URL — Greenhouse has a custom questions section
+    // LinkedIn
     if (payload.linkedinUrl) {
-      const liField = await page.$("input[placeholder*='LinkedIn'], input[id*='linkedin']");
-      if (liField) {
-        await liField.click({ clickCount: 3 });
-        await liField.type(payload.linkedinUrl);
-      }
+      await fillField(page, SELECTORS.linkedin, payload.linkedinUrl);
     }
 
-    // Screenshot before submit
+    // Screenshot before submit (useful for debugging)
     const screenshotPath = `/tmp/greenhouse-apply-${Date.now()}.png`;
     await page.screenshot({ path: screenshotPath, fullPage: true });
 
     // Submit
-    const submitBtn = await page.$('input[type="submit"]#submit_app, button[type="submit"]');
+    const submitBtn = await tryClick(page, SELECTORS.submit);
     if (!submitBtn) throw new Error("Could not find Submit button");
 
     await submitBtn.click();
-    await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 15000 }).catch(() => {});
+    await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 20000 }).catch(() => {});
 
-    const pageText = await page.evaluate(() => document.body.innerText);
+    const pageText: string = await page.evaluate(() => (document as any).body.innerText);
     const succeeded = pageText.toLowerCase().includes("thank") ||
-                      pageText.toLowerCase().includes("application submitted");
+                      pageText.toLowerCase().includes("application submitted") ||
+                      pageText.toLowerCase().includes("application received");
 
-    if (!succeeded) throw new Error("Could not confirm Greenhouse submission");
+    if (!succeeded) throw new Error("Could not confirm Greenhouse submission — check screenshot at " + screenshotPath);
 
     return { success: true, url: page.url(), screenshotPath };
 
