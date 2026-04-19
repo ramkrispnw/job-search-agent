@@ -11,6 +11,7 @@ import { ask } from "../utils/claude";
 import { saveConfig, loadConfig } from "../utils/config";
 import { getAuthClient, verifyFolderAccess } from "../tools/googleDrive";
 import { setupStepHeader, reviewBox, successBox, infoBox } from "../utils/ui";
+import { installCronJob, hasExistingCronJob, removeCronJob, describeSchedule, WEEKDAYS, CronSchedule, LOG_FILE } from "../utils/cronManager";
 
 const TOTAL_STEPS = 8;
 
@@ -583,6 +584,89 @@ async function setupOutput(existing?: UserConfig["output"]): Promise<UserConfig[
   };
 }
 
+// ─── Cron setup ──────────────────────────────────────────────────────────────
+
+async function setupCron(): Promise<void> {
+  if (process.platform === "win32") {
+    console.log(chalk.yellow(
+      "\n  ⚠  Windows detected — automatic scheduling requires WSL or Task Scheduler.\n" +
+      "  Run npm run cron from a WSL terminal to set it up.\n"
+    ));
+    return;
+  }
+
+  console.log("\n" + chalk.cyan("─".repeat(62)));
+  console.log("  " + chalk.bold.white("Automatic Scheduling") + chalk.dim("  (optional)"));
+  console.log(chalk.cyan("─".repeat(62)) + "\n");
+
+  const existing = hasExistingCronJob();
+  if (existing) {
+    console.log(chalk.yellow("  ↻  An existing schedule was found for this agent.\n"));
+  }
+
+  const wantsSchedule = await confirm({
+    message: existing
+      ? "Update the automatic run schedule?"
+      : "Run the agent automatically on a schedule?",
+    default: true
+  });
+
+  if (!wantsSchedule) {
+    if (existing) {
+      const remove = await confirm({ message: "Remove existing schedule?", default: false });
+      if (remove) { removeCronJob(); success("Schedule removed."); }
+    } else {
+      console.log(chalk.dim("  Skipped — run npm run cron later to set up a schedule.\n"));
+    }
+    return;
+  }
+
+  const frequency = await select({
+    message: "How often should the agent run?",
+    choices: [
+      { name: "Daily   — runs every day at a set time", value: "daily"  },
+      { name: "Weekly  — runs once a week on a chosen day", value: "weekly" }
+    ]
+  }) as "daily" | "weekly";
+
+  let weekday: number | undefined;
+  if (frequency === "weekly") {
+    weekday = await select({
+      message: "Which day of the week?",
+      choices: WEEKDAYS
+    });
+  }
+
+  const timeChoice = await select({
+    message: "What time should it run?",
+    choices: [
+      { name: "6:00 AM",  value: { hour: 6,  minute: 0  } },
+      { name: "7:00 AM",  value: { hour: 7,  minute: 0  } },
+      { name: "8:00 AM",  value: { hour: 8,  minute: 0  } },
+      { name: "9:00 AM",  value: { hour: 9,  minute: 0  } },
+      { name: "12:00 PM", value: { hour: 12, minute: 0  } },
+      { name: "Custom",   value: { hour: -1, minute: -1 } }
+    ]
+  });
+
+  let { hour, minute } = timeChoice;
+  if (hour === -1) {
+    hour   = parseInt(await input({ message: "Hour (0–23):",   validate: v => parseInt(v) >= 0 && parseInt(v) <= 23 ? true : "Enter 0–23" }));
+    minute = parseInt(await input({ message: "Minute (0–59):", default: "0", validate: v => parseInt(v) >= 0 && parseInt(v) <= 59 ? true : "Enter 0–59" }));
+  }
+
+  const schedule: CronSchedule = { frequency, hour, minute, weekday };
+
+  try {
+    installCronJob(schedule);
+    success(`Scheduled: ${describeSchedule(schedule)}`);
+    console.log(chalk.dim(`  Logs: ${LOG_FILE}\n`));
+  } catch (err: any) {
+    console.log(chalk.red(`  Could not install cron job: ${err.message}`));
+    console.log(chalk.dim("  Run npm run cron later to set it up manually.\n"));
+  }
+}
+
 // ─── Review screen ───────────────────────────────────────────────────────────
 
 function printReview(
@@ -715,6 +799,9 @@ async function main() {
 
   await saveConfig(config);
 
+  // Optional cron scheduling — always offered at end of setup
+  await setupCron();
+
   successBox("Setup complete!", [
     chalk.dim("Config saved to: ") + chalk.white(CONFIG_PATH),
     "",
@@ -722,6 +809,7 @@ async function main() {
     "",
     chalk.dim("npm run status") + "   view application tracker",
     chalk.dim("npm run resume") + "   update your master resume",
+    chalk.dim("npm run cron")   + "     update schedule anytime",
     chalk.dim("npm run setup")  + "    change any setting",
   ]);
 
