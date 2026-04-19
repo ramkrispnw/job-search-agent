@@ -43,8 +43,15 @@ export async function ask(
       lastError = err;
       const isRateLimit = err?.status === 429 || err?.message?.includes("rate_limit");
       if (isRateLimit && attempt < retries) {
-        const delay = Math.min(10000, 2000 * Math.pow(2, attempt)); // 2s, 4s, 8s, 10s
+        // Use retry-after header if available, otherwise back off toward 60s
+        const retryAfter = err?.headers?.["retry-after"];
+        const delay = retryAfter
+          ? parseInt(retryAfter, 10) * 1000
+          : Math.min(60000, 15000 * Math.pow(2, attempt)); // 15s, 30s, 60s, 60s
+        const seconds = Math.round(delay / 1000);
+        process.stderr.write(`\r  Rate limited — waiting ${seconds}s before retry ${attempt + 1}/${retries}...`);
         await new Promise(res => setTimeout(res, delay));
+        process.stderr.write("\r" + " ".repeat(60) + "\r");
         continue;
       }
       throw err;
