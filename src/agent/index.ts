@@ -115,24 +115,30 @@ async function main() {
     }
   });
 
-  // ── Step 4b: Application Requirements ────────────────────────────────────
+  // ── Step 5: Application Requirements (parallel) ──────────────────────────
   agentHeader(5, TOTAL_STEPS, "Application Requirements");
-  const appRequirements: AppRequirements[] = [];
-  for (const job of sortedJobs) {
-    const sp = ora(`  ${job.company}: checking requirements...`).start();
-    const reqs = await researchApplicationRequirements(anthropicApiKey, job, model);
-    appRequirements.push(reqs);
-    const clLabel: Record<string, string> = {
-      required:    chalk.red("cover letter required"),
-      recommended: chalk.yellow("cover letter recommended"),
-      optional:    chalk.green("cover letter optional"),
-      unknown:     chalk.dim("cover letter: unknown")
-    };
+  const reqSpinners = sortedJobs.map(job => ora(`  ${job.company}: checking requirements...`).start());
+  const reqResults = await Promise.allSettled(
+    sortedJobs.map(job => researchApplicationRequirements(anthropicApiKey, job, model))
+  );
+  const clLabel: Record<string, string> = {
+    required:    chalk.red("cover letter required"),
+    recommended: chalk.yellow("cover letter recommended"),
+    optional:    chalk.green("cover letter optional"),
+    unknown:     chalk.dim("cover letter: unknown")
+  };
+  const appRequirements: AppRequirements[] = reqResults.map((result, i) => {
+    const job = sortedJobs[i];
+    const sp = reqSpinners[i];
+    const reqs = result.status === "fulfilled"
+      ? result.value
+      : { coverLetterStatus: "unknown" as const, additionalQuestions: [], notes: "Error" };
     const qNote = reqs.additionalQuestions.length > 0
-      ? chalk.cyan(` · ${reqs.additionalQuestions.length} additional question(s)`)
+      ? chalk.cyan(` · ${reqs.additionalQuestions.length} question(s)`)
       : "";
     sp.succeed(`  ${job.company}: ${clLabel[reqs.coverLetterStatus]}${qNote}`);
-  }
+    return reqs;
+  });
 
   // ── Step 5: Jobs Report ───────────────────────────────────────────────────
   agentHeader(6, TOTAL_STEPS, "Generating Jobs Report");

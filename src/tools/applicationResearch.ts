@@ -5,9 +5,15 @@ import { JobResult } from "./webSearch";
 
 export interface AppRequirements {
   coverLetterStatus: "required" | "recommended" | "optional" | "unknown";
-  additionalQuestions: string[];  // e.g. ["Why do you want to work here?", "Describe a time you..."]
+  additionalQuestions: string[];
   notes: string;
 }
+
+const FALLBACK: AppRequirements = {
+  coverLetterStatus: "unknown",
+  additionalQuestions: [],
+  notes: "Could not retrieve requirements"
+};
 
 export async function researchApplicationRequirements(
   apiKey: string,
@@ -17,77 +23,62 @@ export async function researchApplicationRequirements(
   const client = new Anthropic({ apiKey });
 
   const prompt = `
-Research the application process for this specific job posting.
+Visit this job posting URL and answer two questions about the application process.
 
-Role: ${job.title}
-Company: ${job.company}
-Location: ${job.location}
-Posting URL: ${job.url}
+URL: ${job.url}
+Role: ${job.title} at ${job.company}
 
-Search for the actual job posting and answer:
+Questions:
 1. Is a cover letter required, recommended, or optional? (check the posting for explicit instructions)
-2. Are there any additional application questions (beyond resume) — e.g. "Why do you want to work at X?", "Describe a relevant project", work authorization, salary expectations, etc.
+2. Are there any additional application questions beyond resume — e.g. "Why do you want to work here?", work authorization, salary expectations, portfolio links?
 
-Return ONLY a JSON object:
+Return ONLY this JSON object, no other text:
 {
   "coverLetterStatus": "required" | "recommended" | "optional" | "unknown",
   "additionalQuestions": ["question 1", "question 2"],
-  "notes": "brief note on what you found — e.g. Greenhouse form with 3 custom questions"
+  "notes": "one line summary of what you found"
 }
 
-If the posting URL is unavailable or you cannot find specifics, set coverLetterStatus to "unknown" and additionalQuestions to [].
-Return ONLY the JSON object, no other text.
+If the page is inaccessible or has no information, use "unknown" and an empty array.
 `;
 
-  const messages: Anthropic.MessageParam[] = [{ role: "user", content: prompt }];
-  const retries = 3;
-
+  const retries = 2;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const response = await client.messages.create({
         model,
         max_tokens: 512,
+        system: "You visit job postings and extract application requirement details.",
         tools: [{ type: "web_search_20250305", name: "web_search" } as any],
-        messages
+        messages: [{ role: "user", content: prompt }]
       });
-
-      if (response.stop_reason === "tool_use") {
-        const toolUseBlocks = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
-        messages.push({ role: "assistant", content: response.content });
-        messages.push({
-          role: "user",
-          content: toolUseBlocks.map(b => ({
-            type: "tool_result" as const,
-            tool_use_id: b.id,
-            content: "Search completed."
-          }))
-        });
-        continue;
-      }
 
       let rawText = "";
       for (const block of response.content) {
         if (block.type === "text") rawText += block.text;
       }
 
+      if (!rawText.trim()) return FALLBACK;
+
       const cleaned = rawText.replace(/```json|```/g, "").trim();
       const start = cleaned.indexOf("{");
       const end = cleaned.lastIndexOf("}");
-      if (start === -1) return { coverLetterStatus: "unknown", additionalQuestions: [], notes: "Could not parse response" };
+      if (start === -1) return FALLBACK;
 
       return JSON.parse(cleaned.slice(start, end + 1)) as AppRequirements;
 
     } catch (err: any) {
       const isRateLimit = err?.status === 429 || err?.message?.includes("rate_limit");
       if (isRateLimit && attempt < retries) {
-        const retryAfter = err?.headers?.["retry-after"];
-        const delay = retryAfter ? parseInt(retryAfter, 10) * 1000 : Math.min(60000, 15000 * Math.pow(2, attempt));
+        const delay = err?.headers?.["retry-after"]
+          ? parseInt(err.headers["retry-after"], 10) * 1000
+          : Math.min(60000, 15000 * Math.pow(2, attempt));
         await new Promise(res => setTimeout(res, delay));
         continue;
       }
-      return { coverLetterStatus: "unknown", additionalQuestions: [], notes: `Error: ${err.message}` };
+      return { ...FALLBACK, notes: `Error: ${err.message}` };
     }
   }
 
-  return { coverLetterStatus: "unknown", additionalQuestions: [], notes: "Max retries exceeded" };
+  return FALLBACK;
 }
