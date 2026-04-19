@@ -12,8 +12,11 @@ import { searchJobsForProfile, JobResult } from "../tools/webSearch";
 import { tailorResume } from "../tools/resumeTailor";
 import { generateCoverLetter } from "../tools/coverLetter";
 import { researchSalary, formatSalaryRange, SalaryData } from "../tools/salaryResearch";
+import { researchApplicationRequirements, AppRequirements } from "../tools/applicationResearch";
+import { generateQuestionAnswers } from "../tools/questionAnswers";
 import { generateJobsReport } from "../tools/reportGenerator";
 import { writeDailyOutput, OutputFile } from "../tools/outputWriter";
+import { sendJobReport } from "../tools/emailSender";
 import { applyToJob } from "../ats/index";
 import { upsertApplication, logRun, getStats, getAll } from "../tracker/index";
 import { CONFIG_DIR } from "../config/types";
@@ -43,6 +46,9 @@ async function main() {
 
   const config = (await loadConfig())!;
   const { resume, targetRoles, targetCompanyTypes, anthropicApiKey, model, output } = config;
+  const preferences = config.preferences ?? { dailyRoleCount: 5, emailReport: false };
+  const roleCount = preferences.dailyRoleCount ?? 5;
+  const minBaseSalary = preferences.minBaseSalary;
 
   // Show lifetime stats if available
   try {
@@ -62,7 +68,7 @@ async function main() {
   header("Step 1 — Loading Resume");
   const candidateName = resume.parsedText.split("\n")[0].trim() || "Candidate";
   console.log(chalk.green(`  ✓ ${candidateName} · ${resume.parsedText.split(" ").length} words`));
-  console.log(chalk.dim(`  Model: ${model}`));
+  console.log(chalk.dim(`  Model: ${model} · ${roleCount} roles/day${minBaseSalary ? ` · Min base $${(minBaseSalary/1000).toFixed(0)}k` : ""}`));
 
   // ── Step 2: Search ────────────────────────────────────────────────────────
   header("Step 2 — Searching for Matching Roles");
@@ -72,10 +78,10 @@ async function main() {
   if (previousRoles.length > 0) {
     console.log(chalk.dim(`  Excluding ${previousRoles.length} previously seen roles\n`));
   }
-  const searchSpinner = ora("Searching the web for best-fit openings...").start();
+  const searchSpinner = ora(`Searching the web for ${roleCount} best-fit openings...`).start();
   let jobs: JobResult[];
   try {
-    jobs = await searchJobsForProfile(anthropicApiKey, resume.parsedText, targetRoles, targetCompanyTypes, model, previousRoles);
+    jobs = await searchJobsForProfile(anthropicApiKey, resume.parsedText, targetRoles, targetCompanyTypes, model, previousRoles, roleCount);
     searchSpinner.succeed(`Found ${jobs.length} matching roles`);
   } catch (err: any) {
     searchSpinner.fail(`Search failed: ${err.message}`);
@@ -85,7 +91,7 @@ async function main() {
   const sortedJobs = jobs.sort((a, b) => b.alignmentScore - a.alignmentScore);
 
   // ── Step 3: Shortlist ─────────────────────────────────────────────────────
-  header("Step 3 — Top 5 Shortlisted Roles");
+  header(`Step 3 — Top ${roleCount} Shortlisted Roles`);
   sortedJobs.forEach((job, i) => {
     const bar = "█".repeat(job.alignmentScore) + "░".repeat(10 - job.alignmentScore);
     console.log(chalk.bold(`  ${i + 1}. ${job.title}`));
@@ -102,46 +108,89 @@ async function main() {
     try {
       const s = await researchSalary(anthropicApiKey, job, model);
       salaryData.push(s);
-      sp.succeed(`  ${job.company}: ${formatSalaryRange(s)}`);
+      const flag = minBaseSalary && s.baseHigh > 0 && s.baseHigh < minBaseSalary
+        ? chalk.red(` ⚠ below min $${(minBaseSalary/1000).toFixed(0)}k`)
+        : "";
+      sp.succeed(`  ${job.company}: ${formatSalaryRange(s)}${flag}`);
     } catch {
       salaryData.push({ role: job.title, company: job.company, baseLow: 0, baseHigh: 0, tcLow: 0, tcHigh: 0, currency: "USD", sources: [], notes: "Unavailable" });
       sp.warn(`  ${job.company}: data unavailable`);
     }
   }
 
+  // ── Step 4b: Application Requirements ────────────────────────────────────
+  header("Step 4b — Researching Application Requirements");
+  const appRequirements: AppRequirements[] = [];
+  for (const job of sortedJobs) {
+    const sp = ora(`  ${job.company}: checking requirements...`).start();
+    const reqs = await researchApplicationRequirements(anthropicApiKey, job, model);
+    appRequirements.push(reqs);
+    const clLabel: Record<string, string> = {
+      required:    chalk.red("cover letter required"),
+      recommended: chalk.yellow("cover letter recommended"),
+      optional:    chalk.green("cover letter optional"),
+      unknown:     chalk.dim("cover letter: unknown")
+    };
+    const qNote = reqs.additionalQuestions.length > 0
+      ? chalk.cyan(` · ${reqs.additionalQuestions.length} additional question(s)`)
+      : "";
+    sp.succeed(`  ${job.company}: ${clLabel[reqs.coverLetterStatus]}${qNote}`);
+  }
+
   // ── Step 5: Jobs Report ───────────────────────────────────────────────────
   header("Step 5 — Generating Jobs Report");
-  const reportSpinner = ora("Building report...").start();
-  const report = generateJobsReport(sortedJobs, candidateName, targetRoles, targetCompanyTypes, salaryData);
-  reportSpinner.succeed("Jobs report ready");
+  const reportSpinner = ora("Building HTML report...").start();
+  const report = generateJobsReport(sortedJobs, candidateName, targetRoles, targetCompanyTypes, salaryData, appRequirements, minBaseSalary);
+  reportSpinner.succeed("HTML jobs report ready");
 
-  // ── Step 6: Resumes + Cover Letters ───────────────────────────────────────
-  header("Step 6 — Tailoring Resumes & Cover Letters");
+  // ── Step 6: Resumes + Cover Letters + Question Answers ────────────────────
+  header("Step 6 — Tailoring Resumes, Cover Letters & Answers");
 
-  const outputFiles: OutputFile[] = [{ name: "jobs-report.md", content: report, type: "report" }];
+  const outputFiles: OutputFile[] = [{ name: "jobs-report.html", content: report, type: "report" }];
   const localItems: { job: JobResult; jobId: string; resumePath: string; coverText: string }[] = [];
 
   for (let i = 0; i < sortedJobs.length; i++) {
     const job = sortedJobs[i];
+    const reqs = appRequirements[i];
     const jobId = `${dateStr}-${slugify(job.company)}-${slugify(job.title)}`;
+    const label = `[${i+1}/${roleCount}]`;
 
-    const rSpin = ora(`  [${i+1}/5] Resume → ${job.company}`).start();
+    const rSpin = ora(`  ${label} Resume → ${job.company}`).start();
     let tailored = "";
     try {
       tailored = await tailorResume(anthropicApiKey, resume.parsedText, job, model, (secs, attempt) => {
-        rSpin.text = `  [${i+1}/5] Resume → ${job.company}  (rate limited — retrying in ${secs}s, attempt ${attempt}/4)`;
+        rSpin.text = `  ${label} Resume → ${job.company}  (rate limited — retrying in ${secs}s, attempt ${attempt}/4)`;
       });
       rSpin.succeed(`  Resume done → ${job.company}`);
     } catch (err: any) { rSpin.fail(`  Failed → ${job.company}: ${err.message}`); continue; }
 
-    const clSpin = ora(`  [${i+1}/5] Cover letter → ${job.company}`).start();
+    // Cover letter — always generate if required/recommended; skip only if truly optional+unknown
+    const needsCoverLetter = reqs.coverLetterStatus === "required" || reqs.coverLetterStatus === "recommended" || reqs.coverLetterStatus === "unknown";
     let coverText = "";
-    try {
-      coverText = await generateCoverLetter(anthropicApiKey, resume.parsedText, job, candidateName, model, (secs, attempt) => {
-        clSpin.text = `  [${i+1}/5] Cover letter → ${job.company}  (rate limited — retrying in ${secs}s, attempt ${attempt}/4)`;
-      });
-      clSpin.succeed(`  Cover letter done → ${job.company}`);
-    } catch { clSpin.warn(`  Cover letter skipped → ${job.company}`); }
+    if (needsCoverLetter) {
+      const clSpin = ora(`  ${label} Cover letter → ${job.company} (${reqs.coverLetterStatus})`).start();
+      try {
+        coverText = await generateCoverLetter(anthropicApiKey, resume.parsedText, job, candidateName, model, (secs, attempt) => {
+          clSpin.text = `  ${label} Cover letter → ${job.company}  (rate limited — retrying in ${secs}s, attempt ${attempt}/4)`;
+        });
+        clSpin.succeed(`  Cover letter done → ${job.company}`);
+      } catch { clSpin.warn(`  Cover letter skipped → ${job.company}`); }
+    } else {
+      console.log(chalk.dim(`  ${label} Cover letter → ${job.company}: skipped (optional)`));
+    }
+
+    // Additional question answers
+    if (reqs.additionalQuestions.length > 0) {
+      const aSpin = ora(`  ${label} Answering ${reqs.additionalQuestions.length} question(s) → ${job.company}`).start();
+      try {
+        const answers = await generateQuestionAnswers(anthropicApiKey, resume.parsedText, job, reqs.additionalQuestions, candidateName, model, (secs, attempt) => {
+          aSpin.text = `  ${label} Answers → ${job.company}  (rate limited — retrying in ${secs}s, attempt ${attempt}/4)`;
+        });
+        const answersContent = reqs.additionalQuestions.map(q => `## ${q}\n\n${answers[q] ?? "N/A"}\n`).join("\n---\n\n");
+        outputFiles.push({ name: `answers-${i+1}-${slugify(job.company)}.md`, content: answersContent, type: "cover_letter" });
+        aSpin.succeed(`  Answers done → ${job.company}`);
+      } catch { aSpin.warn(`  Answers skipped → ${job.company}`); }
+    }
 
     outputFiles.push({ name: `resume-${i+1}-${slugify(job.company)}.md`, content: tailored, type: "resume" });
     if (coverText) outputFiles.push({ name: `cover-${i+1}-${slugify(job.company)}.md`, content: coverText, type: "cover_letter" });
@@ -153,7 +202,6 @@ async function main() {
 
     localItems.push({ job, jobId, resumePath: tmpPath, coverText });
     upsertApplication({ job_id: jobId, title: job.title, company: job.company, location: job.location, url: job.url, status: "queued", alignment: job.alignmentScore });
-
   }
 
   // ── Step 7: Save Output ───────────────────────────────────────────────────
@@ -164,6 +212,21 @@ async function main() {
     outputPath = await writeDailyOutput(config, outputFiles);
     saveSpin.succeed(`Saved → ${outputPath}`);
   } catch (err: any) { saveSpin.fail(err.message); process.exit(1); }
+
+  // ── Step 7b: Email Report ────────────────────────────────────────────────
+  if (preferences.emailReport && config.emailConfig) {
+    const eSpin = ora(`  Emailing report to ${config.emailConfig.toAddress}...`).start();
+    try {
+      await sendJobReport({
+        ...config.emailConfig,
+        subject: `Job Search Report — ${format(new Date(), "MMMM d, yyyy")} (${sortedJobs.length} roles)`,
+        htmlContent: report
+      });
+      eSpin.succeed(`  Report emailed to ${config.emailConfig.toAddress}`);
+    } catch (err: any) {
+      eSpin.warn(`  Email failed: ${err.message}`);
+    }
+  }
 
   // ── Step 8: Apply ─────────────────────────────────────────────────────────
   const isInteractive = process.stdout.isTTY;

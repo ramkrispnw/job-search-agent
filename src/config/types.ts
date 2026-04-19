@@ -36,6 +36,18 @@ export interface UserConfig {
     phone?: string;
     linkedin?: string;
   };
+
+  preferences: {
+    dailyRoleCount: number;    // how many roles to find per run (1-10)
+    minBaseSalary?: number;    // filter/flag roles below this base
+    emailReport: boolean;      // send HTML report by email after each run
+  };
+
+  emailConfig?: {
+    smtpUser: string;          // sender address (e.g. you@gmail.com)
+    smtpPass: string;          // app password
+    toAddress: string;         // recipient address
+  };
 }
 
 export const CONFIG_PATH = `${process.env.HOME}/.job-search-agent/config.json`;

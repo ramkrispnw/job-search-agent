@@ -32,6 +32,7 @@ export async function writeDailyOutput(
         const docxName = file.name.replace(/\.md$/, ".docx");
         await fs.writeFile(path.join(dayDir, docxName), docxBuffer);
       } else {
+        // html and md files are both utf8 text
         await fs.writeFile(path.join(dayDir, file.name), file.content, "utf8");
       }
     }

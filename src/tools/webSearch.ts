@@ -18,7 +18,8 @@ export async function searchJobsForProfile(
   targetRoles: string[],
   targetCompanyTypes: string[],
   model: string,
-  excludeRoles: Array<{ company: string; title: string }> = []
+  excludeRoles: Array<{ company: string; title: string }> = [],
+  roleCount = 5
 ): Promise<JobResult[]> {
   const client = new Anthropic({ apiKey });
 
@@ -28,7 +29,7 @@ export async function searchJobsForProfile(
 
   const searchPrompt = `
 You are a job search specialist. Based on this candidate's resume and preferences,
-search the web for the 5 most relevant current job openings.
+search the web for the ${roleCount} most relevant current job openings.
 
 ## Candidate Resume
 ${resumeText}
@@ -43,7 +44,18 @@ ${exclusionNote}
 1. Search for current open positions matching the candidate's profile
 2. Find roles at companies matching their target company types
 3. Look for positions posted in the last 30 days where possible
-4. Select the 5 best-fit roles — never suggest a role from the exclusion list above (same company + same title)
+4. Select the best-fit roles — never suggest a role from the exclusion list above (same company + same title)
+
+## URL Requirements (IMPORTANT)
+For the job URL, always prefer the direct ATS application link in this priority order:
+1. Greenhouse: boards.greenhouse.io or job-boards.greenhouse.io link
+2. Lever: jobs.lever.co link
+3. Workday: myworkdayjobs.com link
+4. Ashby: jobs.ashbyhq.com link
+5. Company career page (only if no ATS link found)
+6. Job board URL (last resort only)
+
+Search specifically for the ATS-hosted URL, not a job board aggregator link.
 
 For each role, return a JSON array with this exact structure:
 [
@@ -51,7 +63,7 @@ For each role, return a JSON array with this exact structure:
     "title": "exact job title",
     "company": "company name",
     "location": "city, state or Remote",
-    "url": "direct job posting URL",
+    "url": "direct ATS or career page URL (not a job board)",
     "description": "2-3 sentence summary of the role and what makes it interesting",
     "whyItFits": "2-3 sentences on why this specific candidate is a strong fit, referencing their actual experience",
     "alignmentScore": 8

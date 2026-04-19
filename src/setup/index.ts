@@ -309,12 +309,108 @@ ${resumeText}`,
   return types;
 }
 
-// ─── Step 4: Applicant Info ──────────────────────────────────────────────────
+// ─── Step 4: Preferences ─────────────────────────────────────────────────────
+
+async function setupPreferences(
+  existing?: UserConfig["preferences"]
+): Promise<UserConfig["preferences"]> {
+  header("Step 4 — Search Preferences");
+
+  const { input: numberInput } = await import("@inquirer/prompts");
+
+  const dailyRoleCount = parseInt(await numberInput({
+    message: "How many roles should the agent find per daily run? (1–10):",
+    default: String(existing?.dailyRoleCount ?? 5),
+    validate: (v) => {
+      const n = parseInt(v);
+      if (isNaN(n) || n < 1 || n > 10) return "Enter a number between 1 and 10";
+      return true;
+    }
+  }), 10);
+
+  const minSalaryStr = await input({
+    message: "Minimum base salary expectation in USD (press Enter to skip, e.g. 150000):",
+    default: existing?.minBaseSalary ? String(existing.minBaseSalary) : "",
+    validate: (v) => {
+      if (!v.trim()) return true;
+      const n = parseInt(v.replace(/[,$]/g, ""));
+      if (isNaN(n) || n < 0) return "Enter a number like 150000, or leave blank";
+      return true;
+    }
+  });
+  const minBaseSalary = minSalaryStr.trim()
+    ? parseInt(minSalaryStr.replace(/[,$]/g, ""))
+    : undefined;
+
+  const emailReport = await confirm({
+    message: "Send an HTML job report to your email after each run?",
+    default: existing?.emailReport ?? false
+  });
+
+  if (minBaseSalary) success(`Min base salary: $${(minBaseSalary / 1000).toFixed(0)}k`);
+  success(`${dailyRoleCount} roles per run · email report ${emailReport ? "enabled" : "disabled"}`);
+  return { dailyRoleCount, minBaseSalary, emailReport };
+}
+
+// ─── Step 4b: Email Config ────────────────────────────────────────────────────
+
+async function setupEmailConfig(
+  applicantEmail: string,
+  existing?: UserConfig["emailConfig"]
+): Promise<UserConfig["emailConfig"]> {
+  header("Step 4b — Email Configuration (Gmail)");
+  info("Reports will be sent from your Gmail account using an App Password.");
+  info("Generate one at: myaccount.google.com → Security → App Passwords\n");
+
+  while (true) {
+    const smtpUser = await input({
+      message: "Gmail address to send FROM (e.g. you@gmail.com):",
+      default: existing?.smtpUser ?? applicantEmail,
+      validate: (v) => v.includes("@") && v.includes(".") ? true : "Enter a valid email address"
+    });
+
+    const smtpPass = await input({
+      message: "Gmail App Password (16-char, no spaces — NOT your regular password):",
+      default: existing?.smtpPass ?? "",
+      validate: (v) => {
+        const clean = v.replace(/\s/g, "");
+        if (clean.length !== 16) return "App Password should be 16 characters (spaces are OK, they'll be stripped)";
+        return true;
+      }
+    });
+
+    const toAddress = await input({
+      message: "Send reports TO this address:",
+      default: existing?.toAddress ?? applicantEmail,
+      validate: (v) => v.includes("@") ? true : "Enter a valid email address"
+    });
+
+    const testSpin = ora("Sending a test email...").start();
+    try {
+      const nodemailer = require("nodemailer");
+      const transporter = nodemailer.createTransport({
+        host: "smtp.gmail.com", port: 587, secure: false,
+        auth: { user: smtpUser, pass: smtpPass.replace(/\s/g, "") }
+      });
+      await transporter.sendMail({
+        from: `"Job Search Agent" <${smtpUser}>`,
+        to: toAddress,
+        subject: "Job Search Agent — Email configured ✓",
+        html: "<p>Your email report delivery is set up. You'll receive your daily job report here.</p>"
+      });
+      testSpin.succeed(`Test email sent to ${toAddress}`);
+      return { smtpUser, smtpPass: smtpPass.replace(/\s/g, ""), toAddress };
+    } catch (err: any) {
+      testSpin.fail(`Could not send test email: ${err.message}`);
+      info("Common fixes: make sure 2FA is enabled, and use an App Password not your login password.\n");
+    }
+  }
+}
 
 async function setupApplicantInfo(
   existing?: UserConfig["applicantInfo"]
 ): Promise<UserConfig["applicantInfo"]> {
-  header("Step 4 — Contact Info for Auto-Apply");
+  header("Step 5 — Contact Info for Auto-Apply");
   info("Used to fill application forms when auto-applying. Stored locally, never shared.\n");
 
   const email = await input({
@@ -341,10 +437,10 @@ async function setupApplicantInfo(
   };
 }
 
-// ─── Step 5: Output Configuration ───────────────────────────────────────────
+// ─── Step 6: Output Configuration ───────────────────────────────────────────
 
 async function setupOutput(existing?: UserConfig["output"]): Promise<UserConfig["output"]> {
-  header("Step 5 — Output Configuration");
+  header("Step 6 — Output Configuration");
   info("Where should the agent save your daily job reports and tailored resumes?\n");
 
   const mode = await select({
@@ -500,13 +596,21 @@ function printReview(
   resume: UserConfig["resume"],
   roles: string[],
   companies: string[],
+  preferences: UserConfig["preferences"],
   applicantInfo: UserConfig["applicantInfo"],
+  emailConfig: UserConfig["emailConfig"] | undefined,
   output: UserConfig["output"]
 ) {
   const masked = apiKey.slice(0, 8) + "..." + apiKey.slice(-4);
   const outputDesc = output.mode === "local"
     ? `Local → ${output.localPath}`
     : `Google Drive (${output.resumeFormat})`;
+  const salaryDesc = preferences.minBaseSalary
+    ? `$${(preferences.minBaseSalary / 1000).toFixed(0)}k min base`
+    : "no minimum set";
+  const emailDesc = preferences.emailReport
+    ? (emailConfig ? `→ ${emailConfig.toAddress}` : "enabled (email not configured)")
+    : "disabled";
 
   console.log(chalk.bold("\n  Review your configuration:\n"));
   console.log(`  ${chalk.dim("0.")}  API Key        ${chalk.white(masked)}`);
@@ -514,8 +618,9 @@ function printReview(
   console.log(`  ${chalk.dim("1.")}  Resume         ${chalk.white(resume.parsedText.split(/\s+/).length + " words")}`);
   console.log(`  ${chalk.dim("2.")}  Target Roles   ${chalk.white(roles.length + " roles: " + roles.slice(0, 2).join(", ") + (roles.length > 2 ? " ..." : ""))}`);
   console.log(`  ${chalk.dim("3.")}  Company Types  ${chalk.white(companies.length + " types")}`);
-  console.log(`  ${chalk.dim("4.")}  Contact Info   ${chalk.white(applicantInfo.email + (applicantInfo.phone ? " · " + applicantInfo.phone : ""))}`);
-  console.log(`  ${chalk.dim("5.")}  Output         ${chalk.white(outputDesc)}`);
+  console.log(`  ${chalk.dim("4.")}  Preferences    ${chalk.white(preferences.dailyRoleCount + " roles/day · " + salaryDesc + " · email " + emailDesc)}`);
+  console.log(`  ${chalk.dim("5.")}  Contact Info   ${chalk.white(applicantInfo.email + (applicantInfo.phone ? " · " + applicantInfo.phone : ""))}`);
+  console.log(`  ${chalk.dim("6.")}  Output         ${chalk.white(outputDesc)}`);
   console.log();
 }
 
@@ -548,12 +653,17 @@ async function main() {
   let resume        = await setupResume(apiKey, existing?.resume);
   let roles         = await setupTargetRoles(apiKey, resume.parsedText, existing?.targetRoles);
   let companies     = await setupCompanyTypes(apiKey, resume.parsedText, existing?.targetCompanyTypes);
+  let preferences   = await setupPreferences(existing?.preferences);
   let applicantInfo = await setupApplicantInfo(existing?.applicantInfo);
+  let emailConfig: UserConfig["emailConfig"] = existing?.emailConfig;
+  if (preferences.emailReport && !emailConfig) {
+    emailConfig = await setupEmailConfig(applicantInfo.email, existing?.emailConfig);
+  }
   let output        = await setupOutput(existing?.output);
 
   // Review + edit loop
   while (true) {
-    printReview(apiKey, model, resume, roles, companies, applicantInfo, output);
+    printReview(apiKey, model, resume, roles, companies, preferences, applicantInfo, emailConfig, output);
 
     const action = await select({
       message: "Ready to save?",
@@ -564,7 +674,9 @@ async function main() {
         { name: "✏️   Edit resume", value: "resume" },
         { name: "✏️   Edit target roles", value: "roles" },
         { name: "✏️   Edit company types", value: "companies" },
+        { name: "✏️   Edit preferences", value: "preferences" },
         { name: "✏️   Edit contact info", value: "contact" },
+        { name: "✏️   Edit email settings", value: "email" },
         { name: "✏️   Edit output settings", value: "output" },
         { name: "✖   Exit without saving", value: "exit" },
       ]
@@ -575,13 +687,20 @@ async function main() {
       console.log(chalk.yellow("\n  Exited without saving. Run npm run setup to continue.\n"));
       process.exit(0);
     }
-    if (action === "apiKey")    apiKey        = await setupApiKey(apiKey);
-    if (action === "model")     model         = await setupModel(model);
-    if (action === "resume")    resume        = await setupResume(apiKey, resume);
-    if (action === "roles")     roles         = await setupTargetRoles(apiKey, resume.parsedText, roles);
-    if (action === "companies") companies     = await setupCompanyTypes(apiKey, resume.parsedText, companies);
-    if (action === "contact")   applicantInfo = await setupApplicantInfo(applicantInfo);
-    if (action === "output")    output        = await setupOutput(output);
+    if (action === "apiKey")      apiKey        = await setupApiKey(apiKey);
+    if (action === "model")       model         = await setupModel(model);
+    if (action === "resume")      resume        = await setupResume(apiKey, resume);
+    if (action === "roles")       roles         = await setupTargetRoles(apiKey, resume.parsedText, roles);
+    if (action === "companies")   companies     = await setupCompanyTypes(apiKey, resume.parsedText, companies);
+    if (action === "preferences") preferences   = await setupPreferences(preferences);
+    if (action === "contact")     applicantInfo = await setupApplicantInfo(applicantInfo);
+    if (action === "email")       emailConfig   = await setupEmailConfig(applicantInfo.email, emailConfig);
+    if (action === "output")      output        = await setupOutput(output);
+
+    // If email report was just enabled and no config yet, prompt for it
+    if (action === "preferences" && preferences.emailReport && !emailConfig) {
+      emailConfig = await setupEmailConfig(applicantInfo.email);
+    }
   }
 
   const config: UserConfig = {
@@ -591,10 +710,12 @@ async function main() {
     resume,
     targetRoles: roles,
     targetCompanyTypes: companies,
+    preferences,
     output,
     anthropicApiKey: apiKey,
     model,
-    applicantInfo
+    applicantInfo,
+    emailConfig
   };
 
   await saveConfig(config);
