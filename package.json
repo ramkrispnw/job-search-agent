@@ -6,6 +6,7 @@
     "setup": "ts-node src/setup/index.ts",
     "run": "ts-node src/agent/index.ts",
     "status": "ts-node src/cli/status.ts",
+    "resume": "ts-node src/cli/resume.ts",
     "cron": "ts-node src/cli/cron.ts",
     "build": "tsc"
   },

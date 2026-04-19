@@ -103,6 +103,7 @@ npm run run
 | `npm run setup` | Interactive setup wizard (resume, roles, companies, output) |
 | `npm run run` | Run the full agent (search → tailor → apply) |
 | `npm run status` | View application tracker dashboard |
+| `npm run resume` | Edit your master resume (terminal editor, file upload, or Google Doc) |
 | `npm run cron` | Install a daily cron job (Mac/Linux) |
 
 ---
