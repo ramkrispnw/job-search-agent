@@ -35,7 +35,11 @@ export interface UserConfig {
     email: string;
     phone?: string;
     linkedin?: string;
+    workAuthorized?: boolean;      // legally authorized to work (yes/no dropdowns)
+    requiresSponsorship?: boolean; // needs visa sponsorship now or in future
   };
+
+  targetLocations: string[];   // e.g. ["Remote", "San Francisco, CA", "New York, NY"]
 
   preferences: {
     dailyRoleCount: number;    // how many roles to find per run (1-10)

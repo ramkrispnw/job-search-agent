@@ -485,11 +485,25 @@ async function setupApplicantInfo(
     default: existing?.linkedin ?? ""
   });
 
+  console.log(chalk.dim("\n  The next two questions are used to auto-fill work authorization fields on application forms.\n"));
+
+  const workAuthorized = await confirm({
+    message: "Are you legally authorized to work in the country where you're applying?",
+    default: existing?.workAuthorized ?? true
+  });
+
+  const requiresSponsorship = await confirm({
+    message: "Will you now or in the future require visa sponsorship?",
+    default: existing?.requiresSponsorship ?? false
+  });
+
   success("Contact info saved");
   return {
     email,
     phone: phone.trim() || undefined,
-    linkedin: linkedin.trim() || undefined
+    linkedin: linkedin.trim() || undefined,
+    workAuthorized,
+    requiresSponsorship
   };
 }
 

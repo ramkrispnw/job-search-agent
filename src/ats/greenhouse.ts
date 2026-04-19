@@ -1,5 +1,7 @@
 // src/ats/greenhouse.ts — auto-apply to Greenhouse job postings
 
+import { readGreenhouseSecurityCode } from "../utils/emailReader";
+
 export interface ApplyPayload {
   name: string;
   email: string;
@@ -7,6 +9,9 @@ export interface ApplyPayload {
   resumePath: string;
   coverLetter?: string;
   linkedinUrl?: string;
+  workAuthorized?: boolean;      // from config.applicantInfo
+  requiresSponsorship?: boolean; // from config.applicantInfo
+  emailCredentials?: { smtpUser: string; smtpPass: string };
 }
 
 export interface ApplyResult {
@@ -17,7 +22,6 @@ export interface ApplyResult {
   needsEmailVerification?: boolean;
 }
 
-// Greenhouse has two form variants: boards.greenhouse.io (older) and job-boards.greenhouse.io (newer)
 const SELECTORS = {
   firstName: ["#first_name", "input[name='first_name']", "input[autocomplete='given-name']"],
   lastName:  ["#last_name",  "input[name='last_name']",  "input[autocomplete='family-name']"],
@@ -78,89 +82,99 @@ async function sleep(ms: number) {
 
 // Fill LinkedIn by label-matching (fallback for unusual DOM structures)
 async function fillLinkedinByLabel(page: any, value: string): Promise<boolean> {
-  const filled: boolean = await page.evaluate((val: string) => {
-    const labels = Array.from(document.querySelectorAll("label"));
-    for (const label of labels) {
-      if (/linkedin/i.test(label.textContent ?? "")) {
-        const forId = label.getAttribute("for");
-        const input: HTMLInputElement | null = forId
-          ? document.getElementById(forId) as HTMLInputElement
-          : label.querySelector("input");
-        if (input && !input.value) {
-          input.focus();
-          input.value = val;
-          input.dispatchEvent(new Event("input", { bubbles: true }));
-          input.dispatchEvent(new Event("change", { bubbles: true }));
-          return true;
-        }
+  return page.evaluate((val: string) => {
+    for (const label of Array.from(document.querySelectorAll("label"))) {
+      if (!/linkedin/i.test(label.textContent ?? "")) continue;
+      const forId = label.getAttribute("for");
+      const input = (forId ? document.getElementById(forId) : label.querySelector("input")) as HTMLInputElement | null;
+      if (input && !input.value) {
+        input.focus();
+        input.value = val;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        return true;
       }
     }
     return false;
   }, value);
-  return filled;
 }
 
-// Auto-answer common yes/no select/radio questions about work authorization
-async function fillWorkAuthQuestions(page: any): Promise<void> {
-  await page.evaluate(() => {
-    // Handle <select> dropdowns
-    const selects = Array.from(document.querySelectorAll("select")) as HTMLSelectElement[];
-    for (const sel of selects) {
-      const label = document.querySelector(`label[for='${sel.id}']`)?.textContent?.toLowerCase() ?? "";
-      const options = Array.from(sel.options).map(o => o.text.toLowerCase());
-
-      let targetValue: string | null = null;
-
-      if (/authorized|legally.*work|eligible.*work/i.test(label)) {
-        // Pick "Yes" option
-        const yes = Array.from(sel.options).find(o => /^yes$/i.test(o.text.trim()));
-        if (yes) targetValue = yes.value;
-      } else if (/sponsor|visa.*sponsor|require.*sponsor/i.test(label)) {
-        // Pick "No" option (don't require sponsorship)
-        const no = Array.from(sel.options).find(o => /^no$/i.test(o.text.trim()));
-        if (no) targetValue = no.value;
-      }
-
-      if (targetValue !== null && sel.value !== targetValue) {
-        sel.value = targetValue;
+// Fill work authorization selects/radios using the user's configured answers
+async function fillWorkAuthQuestions(page: any, workAuthorized: boolean, requiresSponsorship: boolean): Promise<void> {
+  await page.evaluate((authorized: boolean, needsSponsorship: boolean) => {
+    function pickOption(sel: HTMLSelectElement, prefer: RegExp) {
+      const match = Array.from(sel.options).find(o => prefer.test(o.text.trim()));
+      if (match && sel.value !== match.value) {
+        sel.value = match.value;
         sel.dispatchEvent(new Event("change", { bubbles: true }));
       }
     }
 
-    // Handle radio button groups
-    const fieldsets = Array.from(document.querySelectorAll("fieldset"));
-    for (const fs of fieldsets) {
-      const legend = fs.querySelector("legend")?.textContent?.toLowerCase() ?? "";
+    function clickRadio(fs: Element, prefer: RegExp) {
       const radios = Array.from(fs.querySelectorAll("input[type='radio']")) as HTMLInputElement[];
-      if (radios.length === 0) continue;
-
-      let targetLabel: RegExp | null = null;
-      if (/authorized|legally.*work|eligible.*work/i.test(legend)) {
-        targetLabel = /^yes$/i;
-      } else if (/sponsor|visa.*sponsor|require.*sponsor/i.test(legend)) {
-        targetLabel = /^no$/i;
-      }
-
-      if (targetLabel) {
-        for (const radio of radios) {
-          const rLabel = document.querySelector(`label[for='${radio.id}']`)?.textContent?.trim() ?? radio.value;
-          if (targetLabel.test(rLabel) && !radio.checked) {
-            radio.click();
-            break;
-          }
-        }
+      for (const r of radios) {
+        const label = document.querySelector(`label[for='${r.id}']`)?.textContent?.trim() ?? r.value;
+        if (prefer.test(label) && !r.checked) { r.click(); break; }
       }
     }
-  });
+
+    // Selects
+    for (const sel of Array.from(document.querySelectorAll("select")) as HTMLSelectElement[]) {
+      const labelText = document.querySelector(`label[for='${sel.id}']`)?.textContent?.toLowerCase() ?? "";
+      if (/authorized|legally.*work|eligible.*work/i.test(labelText)) {
+        pickOption(sel, authorized ? /^yes$/i : /^no$/i);
+      } else if (/sponsor|visa.*sponsor|require.*sponsor/i.test(labelText)) {
+        pickOption(sel, needsSponsorship ? /^yes$/i : /^no$/i);
+      }
+    }
+
+    // Radio groups
+    for (const fs of Array.from(document.querySelectorAll("fieldset"))) {
+      const legend = fs.querySelector("legend")?.textContent?.toLowerCase() ?? "";
+      if (/authorized|legally.*work|eligible.*work/i.test(legend)) {
+        clickRadio(fs, authorized ? /^yes$/i : /^no$/i);
+      } else if (/sponsor|visa.*sponsor|require.*sponsor/i.test(legend)) {
+        clickRadio(fs, needsSponsorship ? /^yes$/i : /^no$/i);
+      }
+    }
+  }, workAuthorized, requiresSponsorship);
 }
 
-// Detect if we're on the email security code page
 async function isSecurityCodePage(page: any): Promise<boolean> {
-  const hasCodeInput = await page.$(SELECTORS.securityCode.join(", ")) !== null;
-  if (hasCodeInput) return true;
-
+  const hasInput = await page.$(SELECTORS.securityCode.join(", ")) !== null;
+  if (hasInput) return true;
   const text: string = await page.evaluate(() => (document as any).body.innerText);
   return /security code|verification code|copy and paste this code|enter.*code.*email/i.test(text);
+}
+
+async function submitAndWait(page: any): Promise<void> {
+  const btn = await page.$(SELECTORS.submit.join(", "));
+  if (!btn) throw new Error("Could not find Submit button");
+  await btn.click();
+  await Promise.race([
+    page.waitForNavigation({ waitUntil: "networkidle2", timeout: 25000 }),
+    page.waitForSelector(
+      "[data-qa='application-confirmation'], .application-confirmation, #confirmation, .confirmation",
+      { timeout: 25000 }
+    )
+  ]).catch(() => {});
+  await sleep(1500);
+}
+
+function isConfirmed(pageText: string, url: string): boolean {
+  const t = pageText.toLowerCase();
+  return (
+    t.includes("thank") ||
+    t.includes("application submitted") ||
+    t.includes("application received") ||
+    t.includes("successfully submitted") ||
+    t.includes("we've received your application") ||
+    t.includes("your application has been") ||
+    t.includes("we received your application") ||
+    url.includes("/confirmation") ||
+    url.includes("/submitted") ||
+    url.includes("/success")
+  );
 }
 
 export async function applyGreenhouse(
@@ -188,9 +202,8 @@ export async function applyGreenhouse(
 
     // Name
     const [firstName, ...rest] = payload.name.split(" ");
-    const lastName = rest.join(" ") || "";
     await fillField(page, SELECTORS.firstName, firstName);
-    await fillField(page, SELECTORS.lastName, lastName);
+    await fillField(page, SELECTORS.lastName, rest.join(" ") || "");
 
     // Email + Phone
     await fillField(page, SELECTORS.email, payload.email);
@@ -203,8 +216,8 @@ export async function applyGreenhouse(
       if (resumeInput) break;
     }
     if (!resumeInput) {
-      const allFileInputs = await page.$$("input[type='file']");
-      if (allFileInputs.length > 0) resumeInput = allFileInputs[0];
+      const all = await page.$$("input[type='file']");
+      if (all.length > 0) resumeInput = all[0];
     }
     if (!resumeInput) throw new Error("Could not find resume upload field");
     await resumeInput.uploadFile(payload.resumePath);
@@ -215,74 +228,81 @@ export async function applyGreenhouse(
       await fillField(page, SELECTORS.coverLetter, payload.coverLetter.slice(0, 5000));
     }
 
-    // LinkedIn — try selectors first, then label-based fallback
+    // LinkedIn
     if (payload.linkedinUrl) {
       const filled = await fillField(page, SELECTORS.linkedin, payload.linkedinUrl);
       if (!filled) await fillLinkedinByLabel(page, payload.linkedinUrl);
     }
 
-    // Auto-answer work authorization / sponsorship dropdowns + radios
-    await fillWorkAuthQuestions(page);
+    // Work authorization (using user's confirmed answers from setup)
+    const authorized = payload.workAuthorized ?? true;
+    const sponsorship = payload.requiresSponsorship ?? false;
+    await fillWorkAuthQuestions(page, authorized, sponsorship);
 
     await sleep(500);
 
-    // Submit
-    const submitBtn = await page.$(SELECTORS.submit.join(", "));
-    if (!submitBtn) throw new Error("Could not find Submit button");
-    await submitBtn.click();
+    // First submit
+    await submitAndWait(page);
 
-    // Wait for navigation or in-page confirmation
-    await Promise.race([
-      page.waitForNavigation({ waitUntil: "networkidle2", timeout: 25000 }),
-      page.waitForSelector(
-        "[data-qa='application-confirmation'], .application-confirmation, #confirmation, .confirmation",
-        { timeout: 25000 }
-      )
-    ]).catch(() => {});
-    await sleep(1500);
-
+    // Screenshot after first submit
     const screenshotPath = `/tmp/greenhouse-apply-${Date.now()}.png`;
     await page.screenshot({ path: screenshotPath, fullPage: true });
 
-    const finalUrl = page.url();
-    const pageText: string = await page.evaluate(() => (document as any).body.innerText);
-    const textLower = pageText.toLowerCase();
+    let finalUrl = page.url();
+    let pageText: string = await page.evaluate(() => (document as any).body.innerText);
 
-    // Check for email security code challenge (Greenhouse anti-bot)
+    if (isConfirmed(pageText, finalUrl)) {
+      return { success: true, url: finalUrl, screenshotPath };
+    }
+
+    // Check for security code challenge
     if (await isSecurityCodePage(page)) {
+      if (payload.emailCredentials) {
+        // Try to read the code from Gmail
+        process.stdout.write("  [Greenhouse] Security code required — checking inbox");
+        const code = await readGreenhouseSecurityCode(payload.emailCredentials, 45000);
+
+        if (code) {
+          process.stdout.write(` → code found: ${code}\n`);
+          const codeInput = await page.$(SELECTORS.securityCode.join(", "));
+          if (codeInput) {
+            await codeInput.click({ clickCount: 3 });
+            await codeInput.type(code);
+            await sleep(500);
+            await submitAndWait(page);
+
+            finalUrl = page.url();
+            pageText = await page.evaluate(() => (document as any).body.innerText);
+            await page.screenshot({ path: screenshotPath, fullPage: true });
+
+            if (isConfirmed(pageText, finalUrl)) {
+              return { success: true, url: finalUrl, screenshotPath };
+            }
+          }
+        } else {
+          process.stdout.write(" → not found within timeout\n");
+        }
+      }
+
+      // Fall back: tell user to check inbox
       return {
         success: false,
         url: finalUrl,
         needsEmailVerification: true,
         screenshotPath,
-        error: `Greenhouse sent a security code to ${payload.email} — open that email and complete the application manually at: ${jobUrl}`
+        error: `Greenhouse sent a security code to ${payload.email} — check your inbox and complete at: ${jobUrl}`
       };
     }
 
-    const succeeded =
-      textLower.includes("thank") ||
-      textLower.includes("application submitted") ||
-      textLower.includes("application received") ||
-      textLower.includes("successfully submitted") ||
-      textLower.includes("we've received your application") ||
-      textLower.includes("your application has been") ||
-      textLower.includes("we received your application") ||
-      finalUrl.includes("/confirmation") ||
-      finalUrl.includes("/submitted") ||
-      finalUrl.includes("/success");
-
-    if (!succeeded) {
-      const errorText: string = await page.evaluate(() => {
-        const errs = Array.from(document.querySelectorAll(
-          ".error, .field-error, [class*='error'], [aria-invalid='true'] ~ *, .invalid-feedback"
-        ));
-        return errs.map((e: any) => e.textContent?.trim()).filter(Boolean).slice(0, 3).join("; ");
-      });
-      const hint = errorText ? ` Validation errors: ${errorText}` : "";
-      throw new Error(`Could not confirm Greenhouse submission.${hint} Screenshot: ${screenshotPath}`);
-    }
-
-    return { success: true, url: finalUrl, screenshotPath };
+    // Generic failure
+    const errorText: string = await page.evaluate(() => {
+      const errs = Array.from(document.querySelectorAll(
+        ".error, .field-error, [class*='error'], [aria-invalid='true'] ~ *, .invalid-feedback"
+      ));
+      return errs.map((e: any) => e.textContent?.trim()).filter(Boolean).slice(0, 3).join("; ");
+    });
+    const hint = errorText ? ` Validation errors: ${errorText}` : "";
+    throw new Error(`Could not confirm Greenhouse submission.${hint} Screenshot: ${screenshotPath}`);
 
   } catch (err: any) {
     return { success: false, url: jobUrl, error: err.message };
