@@ -66,16 +66,16 @@ async function main() {
 
   // ── Step 2: Search ────────────────────────────────────────────────────────
   header("Step 2 — Searching for Matching Roles");
-  const previousCompanies = (() => {
-    try { return [...new Set(getAll().map(a => a.company))]; } catch { return []; }
+  const previousRoles = (() => {
+    try { return getAll().map(a => ({ company: a.company, title: a.title })); } catch { return []; }
   })();
-  if (previousCompanies.length > 0) {
-    console.log(chalk.dim(`  Excluding ${previousCompanies.length} previously seen companies\n`));
+  if (previousRoles.length > 0) {
+    console.log(chalk.dim(`  Excluding ${previousRoles.length} previously seen roles\n`));
   }
   const searchSpinner = ora("Searching the web for best-fit openings...").start();
   let jobs: JobResult[];
   try {
-    jobs = await searchJobsForProfile(anthropicApiKey, resume.parsedText, targetRoles, targetCompanyTypes, model, previousCompanies);
+    jobs = await searchJobsForProfile(anthropicApiKey, resume.parsedText, targetRoles, targetCompanyTypes, model, previousRoles);
     searchSpinner.succeed(`Found ${jobs.length} matching roles`);
   } catch (err: any) {
     searchSpinner.fail(`Search failed: ${err.message}`);

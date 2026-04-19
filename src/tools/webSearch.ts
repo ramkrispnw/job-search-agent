@@ -18,12 +18,12 @@ export async function searchJobsForProfile(
   targetRoles: string[],
   targetCompanyTypes: string[],
   model: string,
-  excludeCompanies: string[] = []
+  excludeRoles: Array<{ company: string; title: string }> = []
 ): Promise<JobResult[]> {
   const client = new Anthropic({ apiKey });
 
-  const exclusionNote = excludeCompanies.length > 0
-    ? `\n## Already Recommended — Do NOT include these companies again\n${excludeCompanies.map(c => `- ${c}`).join("\n")}\n`
+  const exclusionNote = excludeRoles.length > 0
+    ? `\n## Already Recommended — Do NOT suggest these roles again\n${excludeRoles.map(r => `- ${r.title} at ${r.company}`).join("\n")}\n`
     : "";
 
   const searchPrompt = `
@@ -43,7 +43,7 @@ ${exclusionNote}
 1. Search for current open positions matching the candidate's profile
 2. Find roles at companies matching their target company types
 3. Look for positions posted in the last 30 days where possible
-4. Select the 5 best-fit roles — never pick a company from the exclusion list above
+4. Select the 5 best-fit roles — never suggest a role from the exclusion list above (same company + same title)
 
 For each role, return a JSON array with this exact structure:
 [
