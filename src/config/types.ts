@@ -30,6 +30,12 @@ export interface UserConfig {
 
   anthropicApiKey: string;
   model: string;
+
+  applicantInfo: {
+    email: string;
+    phone?: string;
+    linkedin?: string;
+  };
 }
 
 export const CONFIG_PATH = `${process.env.HOME}/.job-search-agent/config.json`;

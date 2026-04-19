@@ -54,19 +54,17 @@ export async function applyToJob(options: ApplyOptions): Promise<ApplyResult> {
   // Convert markdown resume to PDF for upload
   const pdfPath = await convertResumeToPdf(tailoredResumePath);
 
-  // Extract candidate info from config
-  // Name: best-effort from first line of resume
   const candidateName = config.resume.parsedText.split("\n")[0].trim() || "Candidate";
-  const email = process.env.APPLICANT_EMAIL || "";
-  const phone = process.env.APPLICANT_PHONE || "";
-  const linkedin = process.env.APPLICANT_LINKEDIN || "";
+  const email = config.applicantInfo?.email || "";
+  const phone = config.applicantInfo?.phone || "";
+  const linkedin = config.applicantInfo?.linkedin || "";
 
   if (!email) {
     return {
       ...base,
       success: false,
       skipped: true,
-      skipReason: "APPLICANT_EMAIL env var not set. Add to .env before auto-applying."
+      skipReason: "No email on file. Run `npm run setup` to add your contact info."
     };
   }
 

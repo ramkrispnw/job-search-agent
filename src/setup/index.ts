@@ -296,10 +296,42 @@ ${resumeText}`,
   return types;
 }
 
-// ─── Step 4: Output Configuration ───────────────────────────────────────────
+// ─── Step 4: Applicant Info ──────────────────────────────────────────────────
+
+async function setupApplicantInfo(
+  existing?: UserConfig["applicantInfo"]
+): Promise<UserConfig["applicantInfo"]> {
+  header("Step 4 — Contact Info for Auto-Apply");
+  info("Used to fill application forms when auto-applying. Stored locally, never shared.\n");
+
+  const email = await input({
+    message: "Your email address:",
+    default: existing?.email,
+    validate: (v) => v.includes("@") ? true : "Please enter a valid email address"
+  });
+
+  const phone = await input({
+    message: "Your phone number (optional, press Enter to skip):",
+    default: existing?.phone ?? ""
+  });
+
+  const linkedin = await input({
+    message: "Your LinkedIn URL (optional, press Enter to skip):",
+    default: existing?.linkedin ?? ""
+  });
+
+  success("Contact info saved");
+  return {
+    email,
+    phone: phone.trim() || undefined,
+    linkedin: linkedin.trim() || undefined
+  };
+}
+
+// ─── Step 5: Output Configuration ───────────────────────────────────────────
 
 async function setupOutput(existing?: UserConfig["output"]): Promise<UserConfig["output"]> {
-  header("Step 4 — Output Configuration");
+  header("Step 5 — Output Configuration");
   info("Where should the agent save your daily job reports and tailored resumes?\n");
 
   const mode = await select({
@@ -430,12 +462,13 @@ async function main() {
   }
 
   // Run all steps
-  const apiKey    = await setupApiKey(existing?.anthropicApiKey);
-  const model     = await setupModel(existing?.model);
-  const resume    = await setupResume(apiKey, existing?.resume);
-  const roles     = await setupTargetRoles(apiKey, resume.parsedText, existing?.targetRoles);
-  const companies = await setupCompanyTypes(apiKey, resume.parsedText, existing?.targetCompanyTypes);
-  const output    = await setupOutput(existing?.output);
+  const apiKey        = await setupApiKey(existing?.anthropicApiKey);
+  const model         = await setupModel(existing?.model);
+  const resume        = await setupResume(apiKey, existing?.resume);
+  const roles         = await setupTargetRoles(apiKey, resume.parsedText, existing?.targetRoles);
+  const companies     = await setupCompanyTypes(apiKey, resume.parsedText, existing?.targetCompanyTypes);
+  const applicantInfo = await setupApplicantInfo(existing?.applicantInfo);
+  const output        = await setupOutput(existing?.output);
 
   // Save config
   const config: UserConfig = {
@@ -447,7 +480,8 @@ async function main() {
     targetCompanyTypes: companies,
     output,
     anthropicApiKey: apiKey,
-    model
+    model,
+    applicantInfo
   };
 
   await saveConfig(config);
