@@ -19,8 +19,8 @@ export async function fetchGoogleDoc(docId: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const request = (targetUrl: string) => {
       https.get(targetUrl, (res) => {
-        if (res.statusCode === 302 || res.statusCode === 301) {
-          return request(res.headers.location!);
+        if ([301, 302, 307, 308].includes(res.statusCode!) && res.headers.location) {
+          return request(res.headers.location);
         }
         if (res.statusCode === 403 || res.statusCode === 401) {
           return reject(new Error(
