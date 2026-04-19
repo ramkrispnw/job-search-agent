@@ -8,7 +8,8 @@ export async function generateCoverLetter(
   resumeText: string,
   job: JobResult,
   candidateName: string,
-  model: string
+  model: string,
+  onWait?: (seconds: number, attempt: number) => void
 ): Promise<string> {
   const today = new Date().toLocaleDateString("en-US", {
     year: "numeric", month: "long", day: "numeric"
@@ -47,5 +48,5 @@ Hiring Team, ${job.company}
 Re: ${job.title}
 `;
 
-  return ask(apiKey, prompt, "You are an expert cover letter writer. Be direct, specific, human.", 4096, model, 4, cachedPrefix);
+  return ask(apiKey, prompt, "You are an expert cover letter writer. Be direct, specific, human.", 800, model, 4, cachedPrefix, onWait);
 }

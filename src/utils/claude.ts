@@ -20,7 +20,8 @@ export async function ask(
   maxTokens = 4096,
   model = DEFAULT_MODEL,
   retries = 4,
-  cachedPrefix?: string  // content to cache (e.g. resume text) — cache reads don't count toward rate limits
+  cachedPrefix?: string,  // content to cache (e.g. resume text) — cache reads don't count toward rate limits
+  onWait?: (seconds: number, attempt: number) => void  // callback so callers can update their spinner
 ): Promise<string> {
   const client = getClient(apiKey);
 
@@ -58,9 +59,13 @@ export async function ask(
           ? parseInt(retryAfter, 10) * 1000
           : Math.min(60000, 15000 * Math.pow(2, attempt)); // 15s, 30s, 60s, 60s
         const seconds = Math.round(delay / 1000);
-        process.stderr.write(`\r  Rate limited — waiting ${seconds}s before retry ${attempt + 1}/${retries}...`);
+        if (onWait) {
+          onWait(seconds, attempt + 1);
+        } else {
+          process.stderr.write(`\r  Rate limited — waiting ${seconds}s before retry ${attempt + 1}/${retries}...`);
+        }
         await new Promise(res => setTimeout(res, delay));
-        process.stderr.write("\r" + " ".repeat(60) + "\r");
+        if (!onWait) process.stderr.write("\r" + " ".repeat(60) + "\r");
         continue;
       }
       throw err;

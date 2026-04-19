@@ -122,15 +122,18 @@ async function main() {
     const rSpin = ora(`  [${i+1}/5] Resume → ${job.company}`).start();
     let tailored = "";
     try {
-      tailored = await tailorResume(anthropicApiKey, resume.parsedText, job, model);
+      tailored = await tailorResume(anthropicApiKey, resume.parsedText, job, model, (secs, attempt) => {
+        rSpin.text = `  [${i+1}/5] Resume → ${job.company}  (rate limited — retrying in ${secs}s, attempt ${attempt}/4)`;
+      });
       rSpin.succeed(`  Resume done → ${job.company}`);
     } catch (err: any) { rSpin.fail(`  Failed → ${job.company}: ${err.message}`); continue; }
-
 
     const clSpin = ora(`  [${i+1}/5] Cover letter → ${job.company}`).start();
     let coverText = "";
     try {
-      coverText = await generateCoverLetter(anthropicApiKey, resume.parsedText, job, candidateName, model);
+      coverText = await generateCoverLetter(anthropicApiKey, resume.parsedText, job, candidateName, model, (secs, attempt) => {
+        clSpin.text = `  [${i+1}/5] Cover letter → ${job.company}  (rate limited — retrying in ${secs}s, attempt ${attempt}/4)`;
+      });
       clSpin.succeed(`  Cover letter done → ${job.company}`);
     } catch { clSpin.warn(`  Cover letter skipped → ${job.company}`); }
 

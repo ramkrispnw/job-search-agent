@@ -7,7 +7,8 @@ export async function tailorResume(
   apiKey: string,
   resumeText: string,
   job: JobResult,
-  model: string
+  model: string,
+  onWait?: (seconds: number, attempt: number) => void
 ): Promise<string> {
   // Resume text is sent as a cached prefix — cache reads don't count toward token rate limits,
   // so all 5 tailoring calls share one cached copy of the resume.
@@ -43,5 +44,5 @@ Why Candidate Fits: ${job.whyItFits}
 Return the full tailored resume in Markdown format. Start with the candidate's name as an H1.
 `;
 
-  return ask(apiKey, prompt, "You are an expert resume writer and career coach.", 4096, model, 4, cachedPrefix);
+  return ask(apiKey, prompt, "You are an expert resume writer and career coach.", 1500, model, 4, cachedPrefix, onWait);
 }
