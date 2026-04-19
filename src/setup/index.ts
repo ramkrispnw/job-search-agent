@@ -34,23 +34,22 @@ async function setupApiKey(existing?: string): Promise<string> {
   info("Your API key is stored locally in ~/.job-search-agent/config.json");
   info("Get one at: https://console.anthropic.com/settings/keys\n");
 
-  const apiKey = await input({
-    message: "Enter your Anthropic API key:",
-    default: existing,
-    validate: (val) => val.startsWith("sk-") ? true : "Key must start with sk-"
-  });
+  while (true) {
+    const apiKey = await input({
+      message: "Enter your Anthropic API key:",
+      default: existing,
+      validate: (val) => val.startsWith("sk-") ? true : "Key must start with sk-"
+    });
 
-  // Quick sanity check
-  const spinner = ora("Verifying API key...").start();
-  try {
-    await ask(apiKey, "Say OK", undefined, 10);
-    spinner.succeed("API key verified");
-  } catch {
-    spinner.fail("Could not verify API key — please check it and try again");
-    process.exit(1);
+    const spinner = ora("Verifying API key...").start();
+    try {
+      await ask(apiKey, "Say OK", undefined, 10);
+      spinner.succeed("API key verified");
+      return apiKey;
+    } catch {
+      spinner.fail("Could not verify API key — please check it and try again");
+    }
   }
-
-  return apiKey;
 }
 
 // ─── Step 0b: Model Selection ────────────────────────────────────────────────
@@ -108,19 +107,21 @@ async function setupResume(apiKey: string, existing?: UserConfig["resume"]): Pro
   if (resumeSource === "google_doc") {
     info("Make sure the doc is shared with \"Anyone with the link can view\"\n");
 
-    const docInput = await input({
-      message: "Google Doc URL or document ID:",
-      validate: (val) => extractGoogleDocId(val) ? true : "Could not find a Google Doc ID in that input"
-    });
+    while (true) {
+      const docInput = await input({
+        message: "Google Doc URL or document ID:",
+        validate: (val) => extractGoogleDocId(val) ? true : "Could not find a Google Doc ID in that input"
+      });
 
-    const docId = extractGoogleDocId(docInput)!;
-    const spinner = ora("Fetching your Google Doc...").start();
-    try {
-      parsedText = await fetchGoogleDoc(docId);
-      spinner.succeed(`Fetched ${parsedText.split(" ").length} words from Google Doc`);
-    } catch (err: any) {
-      spinner.fail(err.message);
-      process.exit(1);
+      const docId = extractGoogleDocId(docInput)!;
+      const spinner = ora("Fetching your Google Doc...").start();
+      try {
+        parsedText = await fetchGoogleDoc(docId);
+        spinner.succeed(`Fetched ${parsedText.split(" ").length} words from Google Doc`);
+        break;
+      } catch (err: any) {
+        spinner.fail(err.message + " — please try again");
+      }
     }
 
     // Save a plain-text copy locally for offline use
@@ -142,20 +143,32 @@ async function setupResume(apiKey: string, existing?: UserConfig["resume"]): Pro
       }
     });
 
-    const expanded = filePath.replace("~", process.env.HOME!);
-    const spinner = ora("Reading and parsing your resume...").start();
-    try {
-      parsedText = await parseResume(expanded);
-      spinner.succeed(`Parsed ${parsedText.split(" ").length} words from your resume`);
-    } catch (err: any) {
-      spinner.fail(err.message);
-      process.exit(1);
+    while (true) {
+      const expanded = filePath.replace("~", process.env.HOME!);
+      const spinner = ora("Reading and parsing your resume...").start();
+      try {
+        parsedText = await parseResume(expanded);
+        spinner.succeed(`Parsed ${parsedText.split(" ").length} words from your resume`);
+        await fs.ensureDir(CONFIG_DIR);
+        originalPath = path.join(CONFIG_DIR, "resume" + path.extname(expanded));
+        await fs.copyFile(expanded, originalPath);
+        success(`Resume saved to ${originalPath}`);
+        break;
+      } catch (err: any) {
+        spinner.fail(err.message + " — please try again");
+        const retry = await input({
+          message: "Path to your resume file:",
+          validate: async (val) => {
+            const exp = val.replace("~", process.env.HOME!);
+            if (!(await fs.pathExists(exp))) return "File not found";
+            const ext = path.extname(exp).toLowerCase();
+            if (![".pdf", ".docx", ".txt", ".md"].includes(ext)) return "Unsupported format";
+            return true;
+          }
+        });
+        filePath = retry;
+      }
     }
-
-    await fs.ensureDir(CONFIG_DIR);
-    originalPath = path.join(CONFIG_DIR, "resume" + path.extname(expanded));
-    await fs.copyFile(expanded, originalPath);
-    success(`Resume saved to ${originalPath}`);
   }
 
   return {
@@ -389,13 +402,16 @@ async function setupOutput(existing?: UserConfig["output"]): Promise<UserConfig[
   4. Create OAuth credentials:
      APIs & Services → Credentials → Create Credentials → OAuth client ID
      → Application type: Desktop app → Name it anything → Create
-  5. Download the client ID and secret shown
-  6. Generate a refresh token:
-     Run this command in your terminal:
-     ${chalk.cyan("npx --yes google-auth-library-nodejs-samples oauth2")}
-     Or use the OAuth Playground: https://developers.google.com/oauthplayground
-     (Scope needed: https://www.googleapis.com/auth/drive.file)
-  7. Copy the refresh token from the response\n`);
+  5. Copy the Client ID and Client Secret shown on screen
+  6. Generate a refresh token via OAuth Playground:
+     https://developers.google.com/oauthplayground
+     → Settings (gear icon) → check "Use your own OAuth credentials"
+     → Enter your Client ID and Secret
+     → In Step 1, enter scope: ${chalk.cyan("https://www.googleapis.com/auth/drive.file")}
+     → Click Authorize → in Step 2, click "Exchange authorization code for tokens"
+     → Copy the ${chalk.bold("refresh_token")} value from the JSON response (starts with 1//)
+  7. Find your Drive folder ID from the folder's browser URL:
+     https://drive.google.com/drive/folders/${chalk.bold("THIS_IS_THE_FOLDER_ID")}\n`);
 
   const ready = await confirm({ message: "Do you have your credentials ready?", default: false });
   if (!ready) {
@@ -403,40 +419,75 @@ async function setupOutput(existing?: UserConfig["output"]): Promise<UserConfig[
     process.exit(0);
   }
 
-  const clientId = await input({
-    message: "Google OAuth Client ID:",
-    default: existing?.googleDrive?.clientId,
-    validate: (v) => v.length > 10 ? true : "Please enter a valid client ID"
-  });
+  let clientId   = existing?.googleDrive?.clientId   ?? "";
+  let clientSecret = existing?.googleDrive?.clientSecret ?? "";
+  let refreshToken = existing?.googleDrive?.refreshToken ?? "";
+  let folderId   = existing?.googleDrive?.folderId   ?? "";
 
-  const clientSecret = await input({
-    message: "Google OAuth Client Secret:",
-    default: existing?.googleDrive?.clientSecret,
-    validate: (v) => v.length > 5 ? true : "Please enter a valid client secret"
-  });
+  while (true) {
+    clientId = await input({
+      message: "Google OAuth Client ID:",
+      hint: "ends with .apps.googleusercontent.com",
+      default: clientId || undefined,
+      validate: (v) => v.includes(".apps.googleusercontent.com") ? true : "Should end with .apps.googleusercontent.com"
+    });
 
-  const refreshToken = await input({
-    message: "Google OAuth Refresh Token:",
-    default: existing?.googleDrive?.refreshToken,
-    validate: (v) => v.length > 10 ? true : "Please enter a valid refresh token"
-  });
+    clientSecret = await input({
+      message: "Google OAuth Client Secret:",
+      hint: "starts with GOCSPX-",
+      default: clientSecret || undefined,
+      validate: (v) => v.startsWith("GOCSPX-") ? true : "Should start with GOCSPX-"
+    });
 
-  const folderId = await input({
-    message: "Google Drive Folder ID (from the folder URL):",
-    default: existing?.googleDrive?.folderId,
-    validate: (v) => v.length > 5 ? true : "Please enter a valid folder ID"
-  });
+    refreshToken = await input({
+      message: "Google OAuth Refresh Token:",
+      hint: "starts with 1// — copy only the token value, not the full JSON",
+      default: refreshToken || undefined,
+      validate: (v) => {
+        if (v.startsWith("1//")) return true;
+        if (v.includes("{") || v.includes("POST") || v.includes("HTTP")) {
+          return "Looks like you copied the wrong thing — paste only the refresh_token value (starts with 1//)";
+        }
+        return "Refresh token should start with 1//";
+      }
+    });
 
-  // Verify access
-  const spinner = ora("Verifying Google Drive access...").start();
-  const auth = getAuthClient(clientId, clientSecret, refreshToken);
-  const hasAccess = await verifyFolderAccess(auth, folderId);
+    folderId = await input({
+      message: "Google Drive Folder ID:",
+      hint: "the last part of the folder URL — short alphanumeric string only",
+      default: folderId || undefined,
+      validate: (v) => {
+        const clean = v.trim();
+        if (clean.includes("drive.google.com") || clean.includes("http")) {
+          return "Paste only the folder ID, not the full URL (the part after /folders/)";
+        }
+        if (clean.length < 10 || clean.includes(" ")) {
+          return "Folder ID should be a short alphanumeric string from the folder URL";
+        }
+        return true;
+      }
+    });
 
-  if (!hasAccess) {
-    spinner.fail("Cannot access that Google Drive folder. Check folder ID and permissions.");
-    process.exit(1);
+    const spinner = ora("Verifying Google Drive access...").start();
+    const auth = getAuthClient(clientId, clientSecret, refreshToken.trim());
+    const hasAccess = await verifyFolderAccess(auth, folderId.trim());
+
+    if (!hasAccess) {
+      spinner.fail(
+        "Cannot access that Google Drive folder.\n\n" +
+        "  Common causes:\n" +
+        "  • Wrong folder ID — copy only the ID from the URL, not the full link\n" +
+        "  • Folder not shared with your Google account\n" +
+        "  • Refresh token expired — re-generate it from OAuth Playground\n" +
+        "  • Wrong OAuth scope — make sure you used https://www.googleapis.com/auth/drive.file\n"
+      );
+      console.log(chalk.yellow("  Let's try again — you can re-enter just the fields that need fixing.\n"));
+      continue;
+    }
+
+    spinner.succeed("Google Drive access verified");
+    break;
   }
-  spinner.succeed("Google Drive access verified");
 
   return {
     mode: "google_drive",
@@ -482,11 +533,18 @@ async function main() {
   ╚══════════════════════════════════════════╝
   `));
 
+  // Allow Ctrl+C to exit cleanly at any point
+  process.on("SIGINT", () => {
+    console.log(chalk.yellow("\n\n  Setup cancelled. Run npm run setup to continue.\n"));
+    process.exit(0);
+  });
+
   const existing = await loadConfig();
 
   if (existing) {
     console.log(chalk.yellow("  Existing configuration found. Running in update mode.\n"));
   }
+  info("Press Ctrl+C at any time to exit without saving.\n");
 
   // Run all steps once upfront
   let apiKey        = await setupApiKey(existing?.anthropicApiKey);
@@ -512,10 +570,15 @@ async function main() {
         { name: "✏️   Edit company types", value: "companies" },
         { name: "✏️   Edit contact info", value: "contact" },
         { name: "✏️   Edit output settings", value: "output" },
+        { name: "✖   Exit without saving", value: "exit" },
       ]
     });
 
     if (action === "save") break;
+    if (action === "exit") {
+      console.log(chalk.yellow("\n  Exited without saving. Run npm run setup to continue.\n"));
+      process.exit(0);
+    }
     if (action === "apiKey")    apiKey        = await setupApiKey(apiKey);
     if (action === "model")     model         = await setupModel(model);
     if (action === "resume")    resume        = await setupResume(apiKey, resume);
