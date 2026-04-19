@@ -6,7 +6,7 @@ import * as path from "path";
 import * as fs from "fs-extra";
 import { input, confirm, select, checkbox, editor } from "@inquirer/prompts";
 import { UserConfig, CONFIG_PATH, CONFIG_DIR } from "../config/types.js";
-import { parseResume } from "../utils/resumeParser.js";
+import { parseResume, extractGoogleDocId, fetchGoogleDoc } from "../utils/resumeParser.js";
 import { ask } from "../utils/claude.js";
 import { saveConfig, loadConfig } from "../utils/config.js";
 import { getAuthClient, verifyFolderAccess } from "../tools/googleDrive.js";
@@ -94,39 +94,72 @@ async function setupResume(apiKey: string, existing?: UserConfig["resume"]): Pro
     if (reuse) return existing;
   }
 
-  const filePath = await input({
-    message: "Path to your resume file (PDF, DOCX, TXT, or MD):",
-    validate: async (val) => {
-      const expanded = val.replace("~", process.env.HOME!);
-      if (!(await fs.pathExists(expanded))) return "File not found";
-      const ext = path.extname(expanded).toLowerCase();
-      if (![".pdf", ".docx", ".txt", ".md"].includes(ext)) {
-        return "Unsupported format. Please use PDF, DOCX, TXT, or MD";
-      }
-      return true;
-    }
+  const resumeSource = await select({
+    message: "Where is your resume?",
+    choices: [
+      { name: "Local file (PDF, DOCX, TXT, or MD)", value: "file" },
+      { name: "Google Doc (share link or doc ID)", value: "google_doc" }
+    ]
   });
 
-  const expanded = filePath.replace("~", process.env.HOME!);
-  const spinner = ora("Reading and parsing your resume...").start();
-
   let parsedText: string;
-  try {
-    parsedText = await parseResume(expanded);
-    spinner.succeed(`Parsed ${parsedText.split(" ").length} words from your resume`);
-  } catch (err: any) {
-    spinner.fail(err.message);
-    process.exit(1);
+  let originalPath: string;
+
+  if (resumeSource === "google_doc") {
+    info("Make sure the doc is shared with \"Anyone with the link can view\"\n");
+
+    const docInput = await input({
+      message: "Google Doc URL or document ID:",
+      validate: (val) => extractGoogleDocId(val) ? true : "Could not find a Google Doc ID in that input"
+    });
+
+    const docId = extractGoogleDocId(docInput)!;
+    const spinner = ora("Fetching your Google Doc...").start();
+    try {
+      parsedText = await fetchGoogleDoc(docId);
+      spinner.succeed(`Fetched ${parsedText.split(" ").length} words from Google Doc`);
+    } catch (err: any) {
+      spinner.fail(err.message);
+      process.exit(1);
+    }
+
+    // Save a plain-text copy locally for offline use
+    await fs.ensureDir(CONFIG_DIR);
+    originalPath = path.join(CONFIG_DIR, "resume.txt");
+    await fs.writeFile(originalPath, parsedText, "utf8");
+    success(`Local copy saved to ${originalPath}`);
+  } else {
+    const filePath = await input({
+      message: "Path to your resume file:",
+      validate: async (val) => {
+        const expanded = val.replace("~", process.env.HOME!);
+        if (!(await fs.pathExists(expanded))) return "File not found";
+        const ext = path.extname(expanded).toLowerCase();
+        if (![".pdf", ".docx", ".txt", ".md"].includes(ext)) {
+          return "Unsupported format. Please use PDF, DOCX, TXT, or MD";
+        }
+        return true;
+      }
+    });
+
+    const expanded = filePath.replace("~", process.env.HOME!);
+    const spinner = ora("Reading and parsing your resume...").start();
+    try {
+      parsedText = await parseResume(expanded);
+      spinner.succeed(`Parsed ${parsedText.split(" ").length} words from your resume`);
+    } catch (err: any) {
+      spinner.fail(err.message);
+      process.exit(1);
+    }
+
+    await fs.ensureDir(CONFIG_DIR);
+    originalPath = path.join(CONFIG_DIR, "resume" + path.extname(expanded));
+    await fs.copyFile(expanded, originalPath);
+    success(`Resume saved to ${originalPath}`);
   }
 
-  // Copy resume to config dir for safekeeping
-  const destPath = path.join(CONFIG_DIR, "resume" + path.extname(expanded));
-  await fs.ensureDir(CONFIG_DIR);
-  await fs.copyFile(expanded, destPath);
-  success(`Resume saved to ${destPath}`);
-
   return {
-    originalPath: destPath,
+    originalPath,
     parsedText,
     lastUpdated: new Date().toISOString()
   };
