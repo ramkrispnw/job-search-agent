@@ -37,13 +37,24 @@ async function setupApiKey(existing?: string): Promise<string> {
       validate: (val) => val.startsWith("sk-") ? true : "Key must start with sk-"
     });
 
-    const spinner = ora("Verifying API key...").start();
+    const spinner = ora("Verifying API key... (up to 10s)").start();
     try {
-      await ask(apiKey, "Say OK", undefined, 10);
-      spinner.succeed("API key verified");
+      // Race the API call against a 10s timeout — retries=0 so it fails fast
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Request timed out")), 10000)
+      );
+      await Promise.race([
+        ask(apiKey, "Say OK", undefined, 10, undefined, 0),
+        timeout
+      ]);
+      spinner.succeed("API key verified ✓");
       return apiKey;
-    } catch {
-      spinner.fail("Could not verify API key — please check it and try again");
+    } catch (err: any) {
+      const msg = err?.status === 401 ? "Invalid API key — check it and try again"
+        : err?.status === 429       ? "Rate limited — wait a moment and try again"
+        : err?.message?.includes("timed out") ? "Request timed out — check your internet connection"
+        : `Could not verify: ${err?.message ?? "unknown error"}`;
+      spinner.fail(msg);
     }
   }
 }
