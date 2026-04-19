@@ -445,6 +445,33 @@ async function setupOutput(existing?: UserConfig["output"]): Promise<UserConfig[
   };
 }
 
+// ─── Review screen ───────────────────────────────────────────────────────────
+
+function printReview(
+  apiKey: string,
+  model: string,
+  resume: UserConfig["resume"],
+  roles: string[],
+  companies: string[],
+  applicantInfo: UserConfig["applicantInfo"],
+  output: UserConfig["output"]
+) {
+  const masked = apiKey.slice(0, 8) + "..." + apiKey.slice(-4);
+  const outputDesc = output.mode === "local"
+    ? `Local → ${output.localPath}`
+    : `Google Drive (${output.resumeFormat})`;
+
+  console.log(chalk.bold("\n  Review your configuration:\n"));
+  console.log(`  ${chalk.dim("0.")}  API Key        ${chalk.white(masked)}`);
+  console.log(`  ${chalk.dim("0b.")} Model          ${chalk.white(model)}`);
+  console.log(`  ${chalk.dim("1.")}  Resume         ${chalk.white(resume.parsedText.split(/\s+/).length + " words")}`);
+  console.log(`  ${chalk.dim("2.")}  Target Roles   ${chalk.white(roles.length + " roles: " + roles.slice(0, 2).join(", ") + (roles.length > 2 ? " ..." : ""))}`);
+  console.log(`  ${chalk.dim("3.")}  Company Types  ${chalk.white(companies.length + " types")}`);
+  console.log(`  ${chalk.dim("4.")}  Contact Info   ${chalk.white(applicantInfo.email + (applicantInfo.phone ? " · " + applicantInfo.phone : ""))}`);
+  console.log(`  ${chalk.dim("5.")}  Output         ${chalk.white(outputDesc)}`);
+  console.log();
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -461,16 +488,43 @@ async function main() {
     console.log(chalk.yellow("  Existing configuration found. Running in update mode.\n"));
   }
 
-  // Run all steps
-  const apiKey        = await setupApiKey(existing?.anthropicApiKey);
-  const model         = await setupModel(existing?.model);
-  const resume        = await setupResume(apiKey, existing?.resume);
-  const roles         = await setupTargetRoles(apiKey, resume.parsedText, existing?.targetRoles);
-  const companies     = await setupCompanyTypes(apiKey, resume.parsedText, existing?.targetCompanyTypes);
-  const applicantInfo = await setupApplicantInfo(existing?.applicantInfo);
-  const output        = await setupOutput(existing?.output);
+  // Run all steps once upfront
+  let apiKey        = await setupApiKey(existing?.anthropicApiKey);
+  let model         = await setupModel(existing?.model);
+  let resume        = await setupResume(apiKey, existing?.resume);
+  let roles         = await setupTargetRoles(apiKey, resume.parsedText, existing?.targetRoles);
+  let companies     = await setupCompanyTypes(apiKey, resume.parsedText, existing?.targetCompanyTypes);
+  let applicantInfo = await setupApplicantInfo(existing?.applicantInfo);
+  let output        = await setupOutput(existing?.output);
 
-  // Save config
+  // Review + edit loop
+  while (true) {
+    printReview(apiKey, model, resume, roles, companies, applicantInfo, output);
+
+    const action = await select({
+      message: "Ready to save?",
+      choices: [
+        { name: "✅  Save and finish", value: "save" },
+        { name: "✏️   Edit API key", value: "apiKey" },
+        { name: "✏️   Edit model", value: "model" },
+        { name: "✏️   Edit resume", value: "resume" },
+        { name: "✏️   Edit target roles", value: "roles" },
+        { name: "✏️   Edit company types", value: "companies" },
+        { name: "✏️   Edit contact info", value: "contact" },
+        { name: "✏️   Edit output settings", value: "output" },
+      ]
+    });
+
+    if (action === "save") break;
+    if (action === "apiKey")    apiKey        = await setupApiKey(apiKey);
+    if (action === "model")     model         = await setupModel(model);
+    if (action === "resume")    resume        = await setupResume(apiKey, resume);
+    if (action === "roles")     roles         = await setupTargetRoles(apiKey, resume.parsedText, roles);
+    if (action === "companies") companies     = await setupCompanyTypes(apiKey, resume.parsedText, companies);
+    if (action === "contact")   applicantInfo = await setupApplicantInfo(applicantInfo);
+    if (action === "output")    output        = await setupOutput(output);
+  }
+
   const config: UserConfig = {
     version: "1.0.0",
     createdAt: existing?.createdAt ?? new Date().toISOString(),
@@ -494,12 +548,10 @@ async function main() {
   To run the agent:
   ${chalk.cyan("npm run run")}
 
-  The agent will:
-  • Search the web for your best-fit roles
-  • Shortlist the top 5
-  • Generate a jobs report
-  • Write a tailored resume for each role
-  • Save everything to your output folder
+  Commands:
+    npm run run     — search, tailor, and apply
+    npm run status  — view application tracker
+    npm run resume  — update your master resume
   `));
 }
 
