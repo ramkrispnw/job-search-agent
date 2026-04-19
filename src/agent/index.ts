@@ -15,7 +15,7 @@ import { researchSalary, formatSalaryRange, SalaryData } from "../tools/salaryRe
 import { generateJobsReport } from "../tools/reportGenerator";
 import { writeDailyOutput, OutputFile } from "../tools/outputWriter";
 import { applyToJob } from "../ats/index";
-import { upsertApplication, logRun, getStats } from "../tracker/index";
+import { upsertApplication, logRun, getStats, getAll } from "../tracker/index";
 import { CONFIG_DIR } from "../config/types";
 
 function header(text: string) {
@@ -66,10 +66,16 @@ async function main() {
 
   // ── Step 2: Search ────────────────────────────────────────────────────────
   header("Step 2 — Searching for Matching Roles");
+  const previousCompanies = (() => {
+    try { return [...new Set(getAll().map(a => a.company))]; } catch { return []; }
+  })();
+  if (previousCompanies.length > 0) {
+    console.log(chalk.dim(`  Excluding ${previousCompanies.length} previously seen companies\n`));
+  }
   const searchSpinner = ora("Searching the web for best-fit openings...").start();
   let jobs: JobResult[];
   try {
-    jobs = await searchJobsForProfile(anthropicApiKey, resume.parsedText, targetRoles, targetCompanyTypes, model);
+    jobs = await searchJobsForProfile(anthropicApiKey, resume.parsedText, targetRoles, targetCompanyTypes, model, previousCompanies);
     searchSpinner.succeed(`Found ${jobs.length} matching roles`);
   } catch (err: any) {
     searchSpinner.fail(`Search failed: ${err.message}`);

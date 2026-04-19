@@ -15,6 +15,12 @@ export interface SalaryData {
   notes: string;
 }
 
+const FALLBACK: (job: JobResult, notes: string) => SalaryData = (job, notes) => ({
+  role: job.title, company: job.company,
+  baseLow: 0, baseHigh: 0, tcLow: 0, tcHigh: 0,
+  currency: "USD", sources: [], notes
+});
+
 export async function researchSalary(
   apiKey: string,
   job: JobResult,
@@ -50,30 +56,61 @@ Use round numbers. If data is unavailable, estimate from comparable companies an
 Return ONLY the JSON object, no other text.
 `;
 
-  const response = await client.messages.create({
-    model,
-    max_tokens: 1024,
-    tools: [{ type: "web_search_20250305", name: "web_search" } as any],
-    messages: [{ role: "user", content: prompt }]
-  });
+  const messages: Anthropic.MessageParam[] = [{ role: "user", content: prompt }];
+  const retries = 4;
+  let lastError: any;
 
-  let rawText = "";
-  for (const block of response.content) {
-    if (block.type === "text") rawText += block.text;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const response = await client.messages.create({
+        model,
+        max_tokens: 1024,
+        tools: [{ type: "web_search_20250305", name: "web_search" } as any],
+        messages
+      });
+
+      // Handle multi-turn: if Claude used the web_search tool, send back tool results
+      if (response.stop_reason === "tool_use") {
+        const toolUseBlocks = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
+        messages.push({ role: "assistant", content: response.content });
+        messages.push({
+          role: "user",
+          content: toolUseBlocks.map(b => ({
+            type: "tool_result" as const,
+            tool_use_id: b.id,
+            content: "Search completed."
+          }))
+        });
+        continue; // loop back to get final text response
+      }
+
+      let rawText = "";
+      for (const block of response.content) {
+        if (block.type === "text") rawText += block.text;
+      }
+
+      const cleaned = rawText.replace(/```json|```/g, "").trim();
+      const start = cleaned.indexOf("{");
+      const end = cleaned.lastIndexOf("}");
+      if (start === -1) return FALLBACK(job, "Could not parse salary data");
+
+      return JSON.parse(cleaned.slice(start, end + 1)) as SalaryData;
+
+    } catch (err: any) {
+      lastError = err;
+      const isRateLimit = err?.status === 429 || err?.message?.includes("rate_limit");
+      if (isRateLimit && attempt < retries) {
+        const retryAfter = err?.headers?.["retry-after"];
+        const delay = retryAfter
+          ? parseInt(retryAfter, 10) * 1000
+          : Math.min(60000, 15000 * Math.pow(2, attempt));
+        await new Promise(res => setTimeout(res, delay));
+        continue;
+      }
+      throw err;
+    }
   }
-
-  const cleaned = rawText.replace(/```json|```/g, "").trim();
-  const start = cleaned.indexOf("{");
-  const end = cleaned.lastIndexOf("}");
-  if (start === -1) {
-    return {
-      role: job.title, company: job.company,
-      baseLow: 0, baseHigh: 0, tcLow: 0, tcHigh: 0,
-      currency: "USD", sources: [], notes: "Could not retrieve salary data"
-    };
-  }
-
-  return JSON.parse(cleaned.slice(start, end + 1)) as SalaryData;
+  throw lastError;
 }
 
 export function formatSalaryRange(data: SalaryData): string {
