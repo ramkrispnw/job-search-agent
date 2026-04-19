@@ -15,70 +15,182 @@ const FALLBACK: AppRequirements = {
   notes: "Could not retrieve requirements"
 };
 
-export async function researchApplicationRequirements(
+// Standard fields to ignore — these are always on application forms
+const STANDARD_FIELDS = new Set([
+  "first name", "last name", "full name", "name",
+  "email", "email address", "phone", "phone number", "mobile",
+  "resume", "cv", "cover letter", "linkedin", "linkedin url", "linkedin profile",
+  "website", "portfolio", "github", "twitter",
+  "address", "city", "state", "zip", "country", "location",
+  "how did you hear about us", "how did you find this job", "referral",
+  "are you authorized to work", "work authorization", "visa", "sponsorship",
+  "salary", "salary expectations", "desired salary", "compensation"
+]);
+
+function isStandardField(label: string): boolean {
+  const lower = label.toLowerCase().trim();
+  for (const std of STANDARD_FIELDS) {
+    if (lower.includes(std)) return true;
+  }
+  return false;
+}
+
+// ─── Puppeteer form scraper ───────────────────────────────────────────────────
+
+async function scrapeApplicationForm(url: string): Promise<{
+  coverLetterStatus: AppRequirements["coverLetterStatus"];
+  questions: string[];
+  notes: string;
+}> {
+  let browser: any;
+  try {
+    const puppeteer = await import("puppeteer");
+    browser = await puppeteer.default.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"]
+    });
+
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 900 });
+    await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36");
+
+    await page.goto(url, { waitUntil: "networkidle2", timeout: 20000 });
+    await new Promise(r => setTimeout(r, 1500));
+
+    // Try to click an Apply button to reveal the form
+    const applySelectors = [
+      "a[href*='apply']", "button[data-qa='btn-apply']",
+      "a[data-qa='btn-apply']", "button::-p-text(Apply)",
+      "a::-p-text(Apply Now)", "button::-p-text(Apply Now)",
+      ".apply-button", "#apply-button", "[class*='apply']"
+    ];
+    for (const sel of applySelectors) {
+      try {
+        const btn = await page.$(sel);
+        if (btn) {
+          await btn.click();
+          await new Promise(r => setTimeout(r, 2000));
+          break;
+        }
+      } catch { /* selector not found */ }
+    }
+
+    // Extract all visible form labels and inputs
+    const formData: { coverLetterStatus: string; questions: string[] } = await page.evaluate(() => {
+      const questions: string[] = [];
+      let coverLetterStatus = "unknown";
+
+      // Collect labels from all form elements
+      const labelEls = Array.from(document.querySelectorAll("label"));
+      for (const label of labelEls) {
+        const text = label.textContent?.trim().replace(/\s+/g, " ").replace(/\*$/, "").trim() ?? "";
+        if (!text || text.length < 3 || text.length > 300) continue;
+
+        // Check for cover letter field
+        if (/cover letter/i.test(text)) {
+          const required = label.querySelector("[required]") ||
+            label.closest(".field")?.querySelector("[required]") ||
+            text.includes("*");
+          coverLetterStatus = required ? "required" : "recommended";
+          continue;
+        }
+
+        questions.push(text);
+      }
+
+      // Also look for textarea labels and fieldset legends (common for custom questions)
+      const fieldsets = Array.from(document.querySelectorAll("fieldset legend, [data-qa*='question'] label, .custom-question label"));
+      for (const el of fieldsets) {
+        const text = el.textContent?.trim().replace(/\s+/g, " ") ?? "";
+        if (text && text.length > 5 && text.length < 300 && !questions.includes(text)) {
+          questions.push(text);
+        }
+      }
+
+      return { coverLetterStatus, questions };
+    });
+
+    // Filter out standard fields, duplicates, and short non-questions
+    const filtered = [...new Set(formData.questions)]
+      .filter(q => !isStandardField(q))
+      .filter(q => q.length > 10);
+
+    return {
+      coverLetterStatus: formData.coverLetterStatus as AppRequirements["coverLetterStatus"],
+      questions: filtered,
+      notes: `Scraped form at ${new URL(url).hostname}`
+    };
+
+  } catch (err: any) {
+    return { coverLetterStatus: "unknown", questions: [], notes: `Could not load form: ${err.message?.slice(0, 80)}` };
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+  }
+}
+
+// ─── Claude fallback for unknown questions ────────────────────────────────────
+
+async function estimateRequirementsFromKnowledge(
   apiKey: string,
   job: JobResult,
   model: string
 ): Promise<AppRequirements> {
   const client = new Anthropic({ apiKey });
-
   const prompt = `
-Visit this job posting URL and answer two questions about the application process.
+Based on your knowledge, what are the typical application requirements for this role?
 
-URL: ${job.url}
-Role: ${job.title} at ${job.company}
+Role: ${job.title}
+Company: ${job.company}
+ATS URL: ${job.url}
 
-Questions:
-1. Is a cover letter required, recommended, or optional? (check the posting for explicit instructions)
-2. Are there any additional application questions beyond resume — e.g. "Why do you want to work here?", work authorization, salary expectations, portfolio links?
+Answer:
+1. Is a cover letter typically required, recommended, or optional for this type of role/company?
+2. What additional questions do companies like this commonly ask beyond name/email/resume?
+   (e.g. work authorization, "why this company", portfolio links, specific skills)
 
-Return ONLY this JSON object, no other text:
+Return ONLY this JSON:
 {
   "coverLetterStatus": "required" | "recommended" | "optional" | "unknown",
   "additionalQuestions": ["question 1", "question 2"],
-  "notes": "one line summary of what you found"
+  "notes": "estimated from company/role knowledge"
+}`;
+
+  try {
+    const response = await client.messages.create({
+      model, max_tokens: 400,
+      messages: [{ role: "user", content: prompt }]
+    });
+
+    const rawText = response.content.filter(b => b.type === "text").map((b: any) => b.text).join("");
+    const cleaned = rawText.replace(/```json|```/g, "").trim();
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
+    if (start === -1) return FALLBACK;
+    return JSON.parse(cleaned.slice(start, end + 1)) as AppRequirements;
+  } catch {
+    return FALLBACK;
+  }
 }
 
-If the page is inaccessible or has no information, use "unknown" and an empty array.
-`;
+// ─── Main export ──────────────────────────────────────────────────────────────
 
-  const retries = 2;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      const response = await client.messages.create({
-        model,
-        max_tokens: 512,
-        system: "You visit job postings and extract application requirement details.",
-        tools: [{ type: "web_search_20250305", name: "web_search" } as any],
-        messages: [{ role: "user", content: prompt }]
-      });
+export async function researchApplicationRequirements(
+  apiKey: string,
+  job: JobResult,
+  model: string
+): Promise<AppRequirements> {
+  // 1. Scrape the actual application form with Puppeteer
+  const scraped = await scrapeApplicationForm(job.url);
 
-      let rawText = "";
-      for (const block of response.content) {
-        if (block.type === "text") rawText += block.text;
-      }
-
-      if (!rawText.trim()) return FALLBACK;
-
-      const cleaned = rawText.replace(/```json|```/g, "").trim();
-      const start = cleaned.indexOf("{");
-      const end = cleaned.lastIndexOf("}");
-      if (start === -1) return FALLBACK;
-
-      return JSON.parse(cleaned.slice(start, end + 1)) as AppRequirements;
-
-    } catch (err: any) {
-      const isRateLimit = err?.status === 429 || err?.message?.includes("rate_limit");
-      if (isRateLimit && attempt < retries) {
-        const delay = err?.headers?.["retry-after"]
-          ? parseInt(err.headers["retry-after"], 10) * 1000
-          : Math.min(60000, 15000 * Math.pow(2, attempt));
-        await new Promise(res => setTimeout(res, delay));
-        continue;
-      }
-      return { ...FALLBACK, notes: `Error: ${err.message}` };
-    }
+  // If we got useful data from the form, return it
+  if (scraped.coverLetterStatus !== "unknown" || scraped.questions.length > 0) {
+    return {
+      coverLetterStatus: scraped.coverLetterStatus,
+      additionalQuestions: scraped.questions,
+      notes: scraped.notes
+    };
   }
 
-  return FALLBACK;
+  // 2. Fall back to Claude's knowledge if scraping found nothing
+  return estimateRequirementsFromKnowledge(apiKey, job, model);
 }
