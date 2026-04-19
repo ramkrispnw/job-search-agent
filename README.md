@@ -54,8 +54,22 @@ job-search-output/
 ## Prerequisites
 
 - **Node.js 18+** — [download](https://nodejs.org)
-- **Anthropic API key** — [get one](https://console.anthropic.com/settings/keys) (Claude Pro or API credits)
+- **Anthropic API key** — [get one](https://console.anthropic.com/settings/keys)
 - **Your resume** in PDF, DOCX, TXT, or MD format
+
+> **Note:** This agent uses the Anthropic API (separate from a claude.ai subscription). New accounts receive $5 in free credits — enough for weeks of daily runs before any payment is needed.
+
+## Cost Estimate
+
+The agent uses Claude Sonnet and makes roughly 12–17 API calls per daily run (search, scoring, salary research, 5 resumes, 5 cover letters, report). At current Sonnet pricing:
+
+| Usage | Estimated Cost |
+|---|---|
+| Single run | ~$0.05–0.10 |
+| Daily for a month | ~$1.50–3.00 |
+| Free credit ($5) covers | ~50–100 runs |
+
+Costs vary based on resume length and job description size. You can set a monthly spend limit in the [Anthropic Console](https://console.anthropic.com) to stay in control.
 
 ---
 
