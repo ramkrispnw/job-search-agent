@@ -612,6 +612,8 @@ async function main() {
     npm run status  — view application tracker
     npm run resume  — update your master resume
   `));
+
+  process.exit(0);
 }
 
 main().catch((err) => {
