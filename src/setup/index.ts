@@ -533,11 +533,18 @@ async function main() {
   ╚══════════════════════════════════════════╝
   `));
 
+  // Allow Ctrl+C to exit cleanly at any point
+  process.on("SIGINT", () => {
+    console.log(chalk.yellow("\n\n  Setup cancelled. Run npm run setup to continue.\n"));
+    process.exit(0);
+  });
+
   const existing = await loadConfig();
 
   if (existing) {
     console.log(chalk.yellow("  Existing configuration found. Running in update mode.\n"));
   }
+  info("Press Ctrl+C at any time to exit without saving.\n");
 
   // Run all steps once upfront
   let apiKey        = await setupApiKey(existing?.anthropicApiKey);
@@ -563,10 +570,15 @@ async function main() {
         { name: "✏️   Edit company types", value: "companies" },
         { name: "✏️   Edit contact info", value: "contact" },
         { name: "✏️   Edit output settings", value: "output" },
+        { name: "✖   Exit without saving", value: "exit" },
       ]
     });
 
     if (action === "save") break;
+    if (action === "exit") {
+      console.log(chalk.yellow("\n  Exited without saving. Run npm run setup to continue.\n"));
+      process.exit(0);
+    }
     if (action === "apiKey")    apiKey        = await setupApiKey(apiKey);
     if (action === "model")     model         = await setupModel(model);
     if (action === "resume")    resume        = await setupResume(apiKey, resume);
