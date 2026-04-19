@@ -126,8 +126,6 @@ async function main() {
       rSpin.succeed(`  Resume done → ${job.company}`);
     } catch (err: any) { rSpin.fail(`  Failed → ${job.company}: ${err.message}`); continue; }
 
-    // Pause between resume and cover letter to spread token usage
-    await new Promise(res => setTimeout(res, 15000));
 
     const clSpin = ora(`  [${i+1}/5] Cover letter → ${job.company}`).start();
     let coverText = "";
@@ -147,8 +145,6 @@ async function main() {
     localItems.push({ job, jobId, resumePath: tmpPath, coverText });
     upsertApplication({ job_id: jobId, title: job.title, company: job.company, location: job.location, url: job.url, status: "queued", alignment: job.alignmentScore });
 
-    // Pause between roles to let the token-per-minute window reset
-    if (i < sortedJobs.length - 1) await new Promise(res => setTimeout(res, 20000));
   }
 
   // ── Step 7: Save Output ───────────────────────────────────────────────────

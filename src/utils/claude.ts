@@ -19,11 +19,20 @@ export async function ask(
   systemPrompt?: string,
   maxTokens = 4096,
   model = DEFAULT_MODEL,
-  retries = 4
+  retries = 4,
+  cachedPrefix?: string  // content to cache (e.g. resume text) — cache reads don't count toward rate limits
 ): Promise<string> {
   const client = getClient(apiKey);
+
+  const userContent: Anthropic.MessageParam["content"] = cachedPrefix
+    ? [
+        { type: "text", text: cachedPrefix, cache_control: { type: "ephemeral" } } as any,
+        { type: "text", text: prompt }
+      ]
+    : prompt;
+
   const messages: Anthropic.MessageParam[] = [
-    { role: "user", content: prompt }
+    { role: "user", content: userContent }
   ];
 
   let lastError: any;

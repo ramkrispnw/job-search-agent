@@ -9,18 +9,19 @@ export async function tailorResume(
   job: JobResult,
   model: string
 ): Promise<string> {
+  // Resume text is sent as a cached prefix — cache reads don't count toward token rate limits,
+  // so all 5 tailoring calls share one cached copy of the resume.
+  const cachedPrefix = `## Candidate Resume\n${resumeText}`;
+
   const prompt = `
-You are an expert resume writer. Rewrite the candidate's resume to be tailored
-specifically for the role below.
+You are an expert resume writer. Rewrite the candidate's resume (provided above) to be
+tailored specifically for the role below.
 
 ## Target Role
 Title: ${job.title}
 Company: ${job.company}
 Description: ${job.description}
 Why Candidate Fits: ${job.whyItFits}
-
-## Original Resume
-${resumeText}
 
 ## Instructions
 - Keep all factual information accurate — do NOT invent experience or metrics
@@ -42,5 +43,5 @@ ${resumeText}
 Return the full tailored resume in Markdown format. Start with the candidate's name as an H1.
 `;
 
-  return ask(apiKey, prompt, "You are an expert resume writer and career coach.", 4096, model);
+  return ask(apiKey, prompt, "You are an expert resume writer and career coach.", 4096, model, 4, cachedPrefix);
 }
