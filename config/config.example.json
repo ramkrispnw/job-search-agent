@@ -1,0 +1,27 @@
+{
+  "version": "1.0.0",
+  "createdAt": "2025-04-19T08:00:00Z",
+  "updatedAt": "2025-04-19T08:00:00Z",
+  "resume": {
+    "originalPath": "~/.job-search-agent/resume.pdf",
+    "parsedText": "YOUR RESUME TEXT WILL BE HERE",
+    "lastUpdated": "2025-04-19T08:00:00Z"
+  },
+  "targetRoles": [
+    "Senior Product Marketing Manager",
+    "Director of Product Marketing",
+    "Head of PMM - AI Products",
+    "Principal PMM - Platform"
+  ],
+  "targetCompanyTypes": [
+    "AI-native startups Series B-D",
+    "FAANG AI teams",
+    "Developer tool companies",
+    "Creator economy platforms"
+  ],
+  "output": {
+    "mode": "local",
+    "localPath": "~/job-search-output"
+  },
+  "_note": "For Google Drive output, set mode to google_drive and add googleDrive credentials block"
+}

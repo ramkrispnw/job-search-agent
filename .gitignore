@@ -1,0 +1,20 @@
+node_modules/
+dist/
+.env
+*.log
+*.pdf
+
+# User config and data — never commit (contains API keys + resume)
+.job-search-agent/
+
+# Temp screenshots from ATS apply
+/tmp/lever-apply-*.png
+/tmp/greenhouse-apply-*.png
+/tmp/workday-apply-*.png
+
+# Local output folders
+job-search-output/
+
+# OS and editor
+.DS_Store
+.claude/
