@@ -16,7 +16,8 @@ export async function searchJobsForProfile(
   apiKey: string,
   resumeText: string,
   targetRoles: string[],
-  targetCompanyTypes: string[]
+  targetCompanyTypes: string[],
+  model: string
 ): Promise<JobResult[]> {
   const client = new Anthropic({ apiKey });
 
@@ -56,7 +57,7 @@ Return ONLY the JSON array, no other text.
 `;
 
   const response = await client.messages.create({
-    model: "claude-sonnet-4-20250514",
+    model,
     max_tokens: 4096,
     tools: [
       {

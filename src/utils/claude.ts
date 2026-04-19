@@ -11,11 +11,14 @@ export function getClient(apiKey: string): Anthropic {
   return _client;
 }
 
+export const DEFAULT_MODEL = "claude-sonnet-4-6";
+
 export async function ask(
   apiKey: string,
   prompt: string,
   systemPrompt?: string,
-  maxTokens = 4096
+  maxTokens = 4096,
+  model = DEFAULT_MODEL
 ): Promise<string> {
   const client = getClient(apiKey);
   const messages: Anthropic.MessageParam[] = [
@@ -23,7 +26,7 @@ export async function ask(
   ];
 
   const response = await client.messages.create({
-    model: "claude-sonnet-4-20250514",
+    model,
     max_tokens: maxTokens,
     system: systemPrompt ?? "You are a helpful career coach and expert resume writer.",
     messages

@@ -17,7 +17,8 @@ export interface SalaryData {
 
 export async function researchSalary(
   apiKey: string,
-  job: JobResult
+  job: JobResult,
+  model: string
 ): Promise<SalaryData> {
   const client = new Anthropic({ apiKey });
 
@@ -50,7 +51,7 @@ Return ONLY the JSON object, no other text.
 `;
 
   const response = await client.messages.create({
-    model: "claude-sonnet-4-20250514",
+    model,
     max_tokens: 1024,
     tools: [{ type: "web_search_20250305", name: "web_search" } as any],
     messages: [{ role: "user", content: prompt }]

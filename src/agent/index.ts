@@ -42,7 +42,7 @@ async function main() {
   }
 
   const config = (await loadConfig())!;
-  const { resume, targetRoles, targetCompanyTypes, anthropicApiKey, output } = config;
+  const { resume, targetRoles, targetCompanyTypes, anthropicApiKey, model, output } = config;
 
   // Show lifetime stats if available
   try {
@@ -62,13 +62,14 @@ async function main() {
   header("Step 1 — Loading Resume");
   const candidateName = resume.parsedText.split("\n")[0].trim() || "Candidate";
   console.log(chalk.green(`  ✓ ${candidateName} · ${resume.parsedText.split(" ").length} words`));
+  console.log(chalk.dim(`  Model: ${model}`));
 
   // ── Step 2: Search ────────────────────────────────────────────────────────
   header("Step 2 — Searching for Matching Roles");
   const searchSpinner = ora("Searching the web for best-fit openings...").start();
   let jobs: JobResult[];
   try {
-    jobs = await searchJobsForProfile(anthropicApiKey, resume.parsedText, targetRoles, targetCompanyTypes);
+    jobs = await searchJobsForProfile(anthropicApiKey, resume.parsedText, targetRoles, targetCompanyTypes, model);
     searchSpinner.succeed(`Found ${jobs.length} matching roles`);
   } catch (err: any) {
     searchSpinner.fail(`Search failed: ${err.message}`);
@@ -93,7 +94,7 @@ async function main() {
   for (const job of sortedJobs) {
     const sp = ora(`  ${job.company}...`).start();
     try {
-      const s = await researchSalary(anthropicApiKey, job);
+      const s = await researchSalary(anthropicApiKey, job, model);
       salaryData.push(s);
       sp.succeed(`  ${job.company}: ${formatSalaryRange(s)}`);
     } catch {
@@ -121,14 +122,14 @@ async function main() {
     const rSpin = ora(`  [${i+1}/5] Resume → ${job.company}`).start();
     let tailored = "";
     try {
-      tailored = await tailorResume(anthropicApiKey, resume.parsedText, job);
+      tailored = await tailorResume(anthropicApiKey, resume.parsedText, job, model);
       rSpin.succeed(`  Resume done → ${job.company}`);
     } catch (err: any) { rSpin.fail(`  Failed → ${job.company}: ${err.message}`); continue; }
 
     const clSpin = ora(`  [${i+1}/5] Cover letter → ${job.company}`).start();
     let coverText = "";
     try {
-      coverText = await generateCoverLetter(anthropicApiKey, resume.parsedText, job, candidateName);
+      coverText = await generateCoverLetter(anthropicApiKey, resume.parsedText, job, candidateName, model);
       clSpin.succeed(`  Cover letter done → ${job.company}`);
     } catch { clSpin.warn(`  Cover letter skipped → ${job.company}`); }
 

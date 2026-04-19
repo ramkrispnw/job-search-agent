@@ -29,6 +29,7 @@ export interface UserConfig {
   };
 
   anthropicApiKey: string;
+  model: string;
 }
 
 export const CONFIG_PATH = `${process.env.HOME}/.job-search-agent/config.json`;

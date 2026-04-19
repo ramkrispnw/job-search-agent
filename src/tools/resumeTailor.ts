@@ -6,7 +6,8 @@ import { JobResult } from "./webSearch.js";
 export async function tailorResume(
   apiKey: string,
   resumeText: string,
-  job: JobResult
+  job: JobResult,
+  model: string
 ): Promise<string> {
   const prompt = `
 You are an expert resume writer. Rewrite the candidate's resume to be tailored
@@ -41,5 +42,5 @@ ${resumeText}
 Return the full tailored resume in Markdown format. Start with the candidate's name as an H1.
 `;
 
-  return ask(apiKey, prompt, "You are an expert resume writer and career coach.");
+  return ask(apiKey, prompt, "You are an expert resume writer and career coach.", 4096, model);
 }

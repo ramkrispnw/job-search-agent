@@ -53,6 +53,34 @@ async function setupApiKey(existing?: string): Promise<string> {
   return apiKey;
 }
 
+// ─── Step 0b: Model Selection ────────────────────────────────────────────────
+
+const MODELS = [
+  {
+    value: "claude-sonnet-4-6",
+    name: "Claude Sonnet 4.6  — Recommended · best balance of quality and cost"
+  },
+  {
+    value: "claude-opus-4-7",
+    name: "Claude Opus 4.7    — Most capable · highest quality · higher cost"
+  },
+  {
+    value: "claude-haiku-4-5-20251001",
+    name: "Claude Haiku 4.5   — Fastest · lowest cost · good for high-volume use"
+  }
+];
+
+async function setupModel(existing?: string): Promise<string> {
+  header("Step 0b — Claude Model");
+  info("Choose which Claude model powers the agent. This affects quality and API cost.\n");
+
+  return select({
+    message: "Claude model:",
+    choices: MODELS,
+    default: existing ?? "claude-sonnet-4-6"
+  });
+}
+
 // ─── Step 1: Resume Upload ───────────────────────────────────────────────────
 
 async function setupResume(apiKey: string, existing?: UserConfig["resume"]): Promise<UserConfig["resume"]> {
@@ -369,11 +397,12 @@ async function main() {
   }
 
   // Run all steps
-  const apiKey  = await setupApiKey(existing?.anthropicApiKey);
-  const resume  = await setupResume(apiKey, existing?.resume);
-  const roles   = await setupTargetRoles(apiKey, resume.parsedText, existing?.targetRoles);
+  const apiKey    = await setupApiKey(existing?.anthropicApiKey);
+  const model     = await setupModel(existing?.model);
+  const resume    = await setupResume(apiKey, existing?.resume);
+  const roles     = await setupTargetRoles(apiKey, resume.parsedText, existing?.targetRoles);
   const companies = await setupCompanyTypes(apiKey, resume.parsedText, existing?.targetCompanyTypes);
-  const output  = await setupOutput(existing?.output);
+  const output    = await setupOutput(existing?.output);
 
   // Save config
   const config: UserConfig = {
@@ -384,7 +413,8 @@ async function main() {
     targetRoles: roles,
     targetCompanyTypes: companies,
     output,
-    anthropicApiKey: apiKey
+    anthropicApiKey: apiKey,
+    model
   };
 
   await saveConfig(config);
