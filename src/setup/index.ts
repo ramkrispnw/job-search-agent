@@ -389,13 +389,16 @@ async function setupOutput(existing?: UserConfig["output"]): Promise<UserConfig[
   4. Create OAuth credentials:
      APIs & Services → Credentials → Create Credentials → OAuth client ID
      → Application type: Desktop app → Name it anything → Create
-  5. Download the client ID and secret shown
-  6. Generate a refresh token:
-     Run this command in your terminal:
-     ${chalk.cyan("npx --yes google-auth-library-nodejs-samples oauth2")}
-     Or use the OAuth Playground: https://developers.google.com/oauthplayground
-     (Scope needed: https://www.googleapis.com/auth/drive.file)
-  7. Copy the refresh token from the response\n`);
+  5. Copy the Client ID and Client Secret shown on screen
+  6. Generate a refresh token via OAuth Playground:
+     https://developers.google.com/oauthplayground
+     → Settings (gear icon) → check "Use your own OAuth credentials"
+     → Enter your Client ID and Secret
+     → In Step 1, enter scope: ${chalk.cyan("https://www.googleapis.com/auth/drive.file")}
+     → Click Authorize → in Step 2, click "Exchange authorization code for tokens"
+     → Copy the ${chalk.bold("refresh_token")} value from the JSON response (starts with 1//)
+  7. Find your Drive folder ID from the folder's browser URL:
+     https://drive.google.com/drive/folders/${chalk.bold("THIS_IS_THE_FOLDER_ID")}\n`);
 
   const ready = await confirm({ message: "Do you have your credentials ready?", default: false });
   if (!ready) {
@@ -405,35 +408,61 @@ async function setupOutput(existing?: UserConfig["output"]): Promise<UserConfig[
 
   const clientId = await input({
     message: "Google OAuth Client ID:",
+    hint: "ends with .apps.googleusercontent.com",
     default: existing?.googleDrive?.clientId,
-    validate: (v) => v.length > 10 ? true : "Please enter a valid client ID"
+    validate: (v) => v.includes(".apps.googleusercontent.com") ? true : "Should end with .apps.googleusercontent.com"
   });
 
   const clientSecret = await input({
     message: "Google OAuth Client Secret:",
+    hint: "starts with GOCSPX-",
     default: existing?.googleDrive?.clientSecret,
-    validate: (v) => v.length > 5 ? true : "Please enter a valid client secret"
+    validate: (v) => v.startsWith("GOCSPX-") ? true : "Should start with GOCSPX-"
   });
 
   const refreshToken = await input({
     message: "Google OAuth Refresh Token:",
+    hint: "starts with 1// — copy only the token value, not the full JSON",
     default: existing?.googleDrive?.refreshToken,
-    validate: (v) => v.length > 10 ? true : "Please enter a valid refresh token"
+    validate: (v) => {
+      if (v.startsWith("1//")) return true;
+      if (v.includes("{") || v.includes("POST") || v.includes("HTTP")) {
+        return "Looks like you copied the wrong thing — paste only the refresh_token value (starts with 1//)";
+      }
+      return "Refresh token should start with 1//";
+    }
   });
 
   const folderId = await input({
-    message: "Google Drive Folder ID (from the folder URL):",
+    message: "Google Drive Folder ID:",
+    hint: "the last part of the folder URL — short alphanumeric string only",
     default: existing?.googleDrive?.folderId,
-    validate: (v) => v.length > 5 ? true : "Please enter a valid folder ID"
+    validate: (v) => {
+      const clean = v.trim();
+      if (clean.includes("drive.google.com") || clean.includes("http")) {
+        return "Paste only the folder ID, not the full URL (the part after /folders/)";
+      }
+      if (clean.length < 10 || clean.includes(" ")) {
+        return "Folder ID should be a short alphanumeric string from the folder URL";
+      }
+      return true;
+    }
   });
 
   // Verify access
   const spinner = ora("Verifying Google Drive access...").start();
-  const auth = getAuthClient(clientId, clientSecret, refreshToken);
-  const hasAccess = await verifyFolderAccess(auth, folderId);
+  const auth = getAuthClient(clientId, clientSecret, refreshToken.trim());
+  const hasAccess = await verifyFolderAccess(auth, folderId.trim());
 
   if (!hasAccess) {
-    spinner.fail("Cannot access that Google Drive folder. Check folder ID and permissions.");
+    spinner.fail(
+      "Cannot access that Google Drive folder.\n\n" +
+      "  Common causes:\n" +
+      "  • Wrong folder ID — copy only the ID from the URL, not the full link\n" +
+      "  • Folder not shared with your Google account\n" +
+      "  • Refresh token expired — re-generate it from OAuth Playground\n" +
+      "  • Wrong OAuth scope — make sure you used https://www.googleapis.com/auth/drive.file"
+    );
     process.exit(1);
   }
   spinner.succeed("Google Drive access verified");
