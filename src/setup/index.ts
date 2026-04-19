@@ -196,11 +196,15 @@ async function setupTargetRoles(
 
   let roles: string[] = existing ?? [];
 
-  if (roles.length === 0) {
+  if (roles.length > 0) {
+    console.log(chalk.bold("\n  Currently saved target roles:\n"));
+    roles.forEach((r, i) => console.log(chalk.dim(`  ${i + 1}.`) + " " + r));
+    console.log();
+  } else {
     const spinner = ora("Analyzing your resume to suggest target roles...").start();
     const raw = await ask(
       apiKey,
-      `Based on this resume, suggest 8 specific job titles this person should target. 
+      `Based on this resume, suggest 8 specific job titles this person should target.
 Return ONLY a JSON array of strings. No explanation.
 
 Resume:
@@ -217,9 +221,8 @@ ${resumeText}`,
     } catch {
       roles = ["Senior Product Marketing Manager", "Director of PMM", "Head of Product Marketing"];
     }
+    console.log();
   }
-
-  console.log("\n");
   const action = await select({
     message: "What would you like to do?",
     choices: [
@@ -263,7 +266,11 @@ async function setupCompanyTypes(
 
   let types: string[] = existing ?? [];
 
-  if (types.length === 0) {
+  if (types.length > 0) {
+    console.log(chalk.bold("\n  Currently saved company types:\n"));
+    types.forEach((t, i) => console.log(chalk.dim(`  ${i + 1}.`) + " " + t));
+    console.log();
+  } else {
     const spinner = ora("Suggesting company types based on your background...").start();
     const raw = await ask(
       apiKey,
@@ -285,9 +292,8 @@ ${resumeText}`,
     } catch {
       types = ["AI-native startups Series B-D", "FAANG AI teams", "Developer tool companies"];
     }
+    console.log();
   }
-
-  console.log("\n");
   const action = await select({
     message: "What would you like to do?",
     choices: [
