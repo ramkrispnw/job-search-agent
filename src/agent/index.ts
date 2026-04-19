@@ -143,6 +143,9 @@ async function main() {
 
     localItems.push({ job, jobId, resumePath: tmpPath, coverText });
     upsertApplication({ job_id: jobId, title: job.title, company: job.company, location: job.location, url: job.url, status: "queued", alignment: job.alignmentScore });
+
+    // Brief pause between roles to stay within token-per-minute rate limits
+    if (i < sortedJobs.length - 1) await new Promise(res => setTimeout(res, 3000));
   }
 
   // ── Step 7: Save Output ───────────────────────────────────────────────────
