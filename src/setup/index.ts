@@ -34,23 +34,22 @@ async function setupApiKey(existing?: string): Promise<string> {
   info("Your API key is stored locally in ~/.job-search-agent/config.json");
   info("Get one at: https://console.anthropic.com/settings/keys\n");
 
-  const apiKey = await input({
-    message: "Enter your Anthropic API key:",
-    default: existing,
-    validate: (val) => val.startsWith("sk-") ? true : "Key must start with sk-"
-  });
+  while (true) {
+    const apiKey = await input({
+      message: "Enter your Anthropic API key:",
+      default: existing,
+      validate: (val) => val.startsWith("sk-") ? true : "Key must start with sk-"
+    });
 
-  // Quick sanity check
-  const spinner = ora("Verifying API key...").start();
-  try {
-    await ask(apiKey, "Say OK", undefined, 10);
-    spinner.succeed("API key verified");
-  } catch {
-    spinner.fail("Could not verify API key — please check it and try again");
-    process.exit(1);
+    const spinner = ora("Verifying API key...").start();
+    try {
+      await ask(apiKey, "Say OK", undefined, 10);
+      spinner.succeed("API key verified");
+      return apiKey;
+    } catch {
+      spinner.fail("Could not verify API key — please check it and try again");
+    }
   }
-
-  return apiKey;
 }
 
 // ─── Step 0b: Model Selection ────────────────────────────────────────────────
@@ -108,19 +107,21 @@ async function setupResume(apiKey: string, existing?: UserConfig["resume"]): Pro
   if (resumeSource === "google_doc") {
     info("Make sure the doc is shared with \"Anyone with the link can view\"\n");
 
-    const docInput = await input({
-      message: "Google Doc URL or document ID:",
-      validate: (val) => extractGoogleDocId(val) ? true : "Could not find a Google Doc ID in that input"
-    });
+    while (true) {
+      const docInput = await input({
+        message: "Google Doc URL or document ID:",
+        validate: (val) => extractGoogleDocId(val) ? true : "Could not find a Google Doc ID in that input"
+      });
 
-    const docId = extractGoogleDocId(docInput)!;
-    const spinner = ora("Fetching your Google Doc...").start();
-    try {
-      parsedText = await fetchGoogleDoc(docId);
-      spinner.succeed(`Fetched ${parsedText.split(" ").length} words from Google Doc`);
-    } catch (err: any) {
-      spinner.fail(err.message);
-      process.exit(1);
+      const docId = extractGoogleDocId(docInput)!;
+      const spinner = ora("Fetching your Google Doc...").start();
+      try {
+        parsedText = await fetchGoogleDoc(docId);
+        spinner.succeed(`Fetched ${parsedText.split(" ").length} words from Google Doc`);
+        break;
+      } catch (err: any) {
+        spinner.fail(err.message + " — please try again");
+      }
     }
 
     // Save a plain-text copy locally for offline use
@@ -142,20 +143,32 @@ async function setupResume(apiKey: string, existing?: UserConfig["resume"]): Pro
       }
     });
 
-    const expanded = filePath.replace("~", process.env.HOME!);
-    const spinner = ora("Reading and parsing your resume...").start();
-    try {
-      parsedText = await parseResume(expanded);
-      spinner.succeed(`Parsed ${parsedText.split(" ").length} words from your resume`);
-    } catch (err: any) {
-      spinner.fail(err.message);
-      process.exit(1);
+    while (true) {
+      const expanded = filePath.replace("~", process.env.HOME!);
+      const spinner = ora("Reading and parsing your resume...").start();
+      try {
+        parsedText = await parseResume(expanded);
+        spinner.succeed(`Parsed ${parsedText.split(" ").length} words from your resume`);
+        await fs.ensureDir(CONFIG_DIR);
+        originalPath = path.join(CONFIG_DIR, "resume" + path.extname(expanded));
+        await fs.copyFile(expanded, originalPath);
+        success(`Resume saved to ${originalPath}`);
+        break;
+      } catch (err: any) {
+        spinner.fail(err.message + " — please try again");
+        const retry = await input({
+          message: "Path to your resume file:",
+          validate: async (val) => {
+            const exp = val.replace("~", process.env.HOME!);
+            if (!(await fs.pathExists(exp))) return "File not found";
+            const ext = path.extname(exp).toLowerCase();
+            if (![".pdf", ".docx", ".txt", ".md"].includes(ext)) return "Unsupported format";
+            return true;
+          }
+        });
+        filePath = retry;
+      }
     }
-
-    await fs.ensureDir(CONFIG_DIR);
-    originalPath = path.join(CONFIG_DIR, "resume" + path.extname(expanded));
-    await fs.copyFile(expanded, originalPath);
-    success(`Resume saved to ${originalPath}`);
   }
 
   return {
@@ -406,66 +419,75 @@ async function setupOutput(existing?: UserConfig["output"]): Promise<UserConfig[
     process.exit(0);
   }
 
-  const clientId = await input({
-    message: "Google OAuth Client ID:",
-    hint: "ends with .apps.googleusercontent.com",
-    default: existing?.googleDrive?.clientId,
-    validate: (v) => v.includes(".apps.googleusercontent.com") ? true : "Should end with .apps.googleusercontent.com"
-  });
+  let clientId   = existing?.googleDrive?.clientId   ?? "";
+  let clientSecret = existing?.googleDrive?.clientSecret ?? "";
+  let refreshToken = existing?.googleDrive?.refreshToken ?? "";
+  let folderId   = existing?.googleDrive?.folderId   ?? "";
 
-  const clientSecret = await input({
-    message: "Google OAuth Client Secret:",
-    hint: "starts with GOCSPX-",
-    default: existing?.googleDrive?.clientSecret,
-    validate: (v) => v.startsWith("GOCSPX-") ? true : "Should start with GOCSPX-"
-  });
+  while (true) {
+    clientId = await input({
+      message: "Google OAuth Client ID:",
+      hint: "ends with .apps.googleusercontent.com",
+      default: clientId || undefined,
+      validate: (v) => v.includes(".apps.googleusercontent.com") ? true : "Should end with .apps.googleusercontent.com"
+    });
 
-  const refreshToken = await input({
-    message: "Google OAuth Refresh Token:",
-    hint: "starts with 1// — copy only the token value, not the full JSON",
-    default: existing?.googleDrive?.refreshToken,
-    validate: (v) => {
-      if (v.startsWith("1//")) return true;
-      if (v.includes("{") || v.includes("POST") || v.includes("HTTP")) {
-        return "Looks like you copied the wrong thing — paste only the refresh_token value (starts with 1//)";
+    clientSecret = await input({
+      message: "Google OAuth Client Secret:",
+      hint: "starts with GOCSPX-",
+      default: clientSecret || undefined,
+      validate: (v) => v.startsWith("GOCSPX-") ? true : "Should start with GOCSPX-"
+    });
+
+    refreshToken = await input({
+      message: "Google OAuth Refresh Token:",
+      hint: "starts with 1// — copy only the token value, not the full JSON",
+      default: refreshToken || undefined,
+      validate: (v) => {
+        if (v.startsWith("1//")) return true;
+        if (v.includes("{") || v.includes("POST") || v.includes("HTTP")) {
+          return "Looks like you copied the wrong thing — paste only the refresh_token value (starts with 1//)";
+        }
+        return "Refresh token should start with 1//";
       }
-      return "Refresh token should start with 1//";
+    });
+
+    folderId = await input({
+      message: "Google Drive Folder ID:",
+      hint: "the last part of the folder URL — short alphanumeric string only",
+      default: folderId || undefined,
+      validate: (v) => {
+        const clean = v.trim();
+        if (clean.includes("drive.google.com") || clean.includes("http")) {
+          return "Paste only the folder ID, not the full URL (the part after /folders/)";
+        }
+        if (clean.length < 10 || clean.includes(" ")) {
+          return "Folder ID should be a short alphanumeric string from the folder URL";
+        }
+        return true;
+      }
+    });
+
+    const spinner = ora("Verifying Google Drive access...").start();
+    const auth = getAuthClient(clientId, clientSecret, refreshToken.trim());
+    const hasAccess = await verifyFolderAccess(auth, folderId.trim());
+
+    if (!hasAccess) {
+      spinner.fail(
+        "Cannot access that Google Drive folder.\n\n" +
+        "  Common causes:\n" +
+        "  • Wrong folder ID — copy only the ID from the URL, not the full link\n" +
+        "  • Folder not shared with your Google account\n" +
+        "  • Refresh token expired — re-generate it from OAuth Playground\n" +
+        "  • Wrong OAuth scope — make sure you used https://www.googleapis.com/auth/drive.file\n"
+      );
+      console.log(chalk.yellow("  Let's try again — you can re-enter just the fields that need fixing.\n"));
+      continue;
     }
-  });
 
-  const folderId = await input({
-    message: "Google Drive Folder ID:",
-    hint: "the last part of the folder URL — short alphanumeric string only",
-    default: existing?.googleDrive?.folderId,
-    validate: (v) => {
-      const clean = v.trim();
-      if (clean.includes("drive.google.com") || clean.includes("http")) {
-        return "Paste only the folder ID, not the full URL (the part after /folders/)";
-      }
-      if (clean.length < 10 || clean.includes(" ")) {
-        return "Folder ID should be a short alphanumeric string from the folder URL";
-      }
-      return true;
-    }
-  });
-
-  // Verify access
-  const spinner = ora("Verifying Google Drive access...").start();
-  const auth = getAuthClient(clientId, clientSecret, refreshToken.trim());
-  const hasAccess = await verifyFolderAccess(auth, folderId.trim());
-
-  if (!hasAccess) {
-    spinner.fail(
-      "Cannot access that Google Drive folder.\n\n" +
-      "  Common causes:\n" +
-      "  • Wrong folder ID — copy only the ID from the URL, not the full link\n" +
-      "  • Folder not shared with your Google account\n" +
-      "  • Refresh token expired — re-generate it from OAuth Playground\n" +
-      "  • Wrong OAuth scope — make sure you used https://www.googleapis.com/auth/drive.file"
-    );
-    process.exit(1);
+    spinner.succeed("Google Drive access verified");
+    break;
   }
-  spinner.succeed("Google Drive access verified");
 
   return {
     mode: "google_drive",
