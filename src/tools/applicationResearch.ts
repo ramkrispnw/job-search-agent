@@ -54,8 +54,8 @@ async function scrapeApplicationForm(url: string): Promise<{
     await page.setViewport({ width: 1280, height: 900 });
     await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36");
 
-    await page.goto(url, { waitUntil: "networkidle2", timeout: 20000 });
-    await new Promise(r => setTimeout(r, 1500));
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 10000 });
+    await new Promise(r => setTimeout(r, 800));
 
     // Try to click an Apply button to reveal the form
     const applySelectors = [
@@ -69,7 +69,7 @@ async function scrapeApplicationForm(url: string): Promise<{
         const btn = await page.$(sel);
         if (btn) {
           await btn.click();
-          await new Promise(r => setTimeout(r, 2000));
+          await new Promise(r => setTimeout(r, 1000));
           break;
         }
       } catch { /* selector not found */ }
@@ -179,8 +179,14 @@ export async function researchApplicationRequirements(
   job: JobResult,
   model: string
 ): Promise<AppRequirements> {
-  // 1. Scrape the actual application form with Puppeteer
-  const scraped = await scrapeApplicationForm(job.url);
+  // 1. Scrape the actual application form — hard 12s timeout so it never hangs
+  const scrapeWithTimeout = Promise.race([
+    scrapeApplicationForm(job.url),
+    new Promise<{ coverLetterStatus: AppRequirements["coverLetterStatus"]; questions: string[]; notes: string }>(
+      resolve => setTimeout(() => resolve({ coverLetterStatus: "unknown", questions: [], notes: "Timed out" }), 12000)
+    )
+  ]);
+  const scraped = await scrapeWithTimeout;
 
   // If we got useful data from the form, return it
   if (scraped.coverLetterStatus !== "unknown" || scraped.questions.length > 0) {

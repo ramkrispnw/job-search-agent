@@ -109,12 +109,6 @@ async function main() {
   // ── Step 3: Shortlist + Salary + Requirements (parallel) ──────────────────
   agentHeader(3, TOTAL_STEPS, `Shortlisted Roles — Salary & Requirements`);
 
-  const salarySpinners = sortedJobs.map(job => ora(`  ${job.company}: salary...`).start());
-  const [salaryResults, reqResults] = await Promise.all([
-    Promise.allSettled(sortedJobs.map(job => researchSalary(anthropicApiKey, job, model))),
-    Promise.allSettled(sortedJobs.map(job => researchApplicationRequirements(anthropicApiKey, job, model)))
-  ]);
-
   const clLabel: Record<string, string> = {
     required:    chalk.red("CL required"),
     recommended: chalk.yellow("CL recommended"),
@@ -122,30 +116,35 @@ async function main() {
     unknown:     chalk.dim("CL unknown")
   };
 
-  const salaryData: SalaryData[] = salaryResults.map((result, i) => {
-    const job = sortedJobs[i];
-    const sp = salarySpinners[i];
-    if (result.status === "fulfilled") {
-      const s = result.value;
-      const flag = minBaseSalary && s.baseHigh > 0 && s.baseHigh < minBaseSalary
-        ? chalk.red(` ⚠ below min $${(minBaseSalary/1000).toFixed(0)}k`) : "";
-      const reqs = reqResults[i].status === "fulfilled" ? reqResults[i].value : null;
-      const qNote = reqs && reqs.additionalQuestions.length > 0
-        ? chalk.cyan(` · ${reqs.additionalQuestions.length}Q`) : "";
-      const clNote = reqs ? ` · ${clLabel[reqs.coverLetterStatus]}` : "";
-      sp.succeed(`  ${job.company}: ${formatSalaryRange(s)}${flag}${clNote}${qNote}`);
-      return s;
-    } else {
-      sp.warn(`  ${job.company}: salary unavailable`);
-      return { role: job.title, company: job.company, baseLow: 0, baseHigh: 0, tcLow: 0, tcHigh: 0, currency: "USD", sources: [], notes: "Unavailable" };
-    }
-  });
+  // Run salary + requirements per company concurrently, complete spinner as each finishes
+  const salaryData: SalaryData[] = new Array(sortedJobs.length);
+  const appRequirements: AppRequirements[] = new Array(sortedJobs.length);
 
-  const appRequirements: AppRequirements[] = reqResults.map((result) =>
-    result.status === "fulfilled"
-      ? result.value
-      : { coverLetterStatus: "unknown" as const, additionalQuestions: [], notes: "Error" }
-  );
+  await Promise.all(sortedJobs.map(async (job, i) => {
+    const sp = ora(`  ${job.company}: salary & requirements...`).start();
+    const [salaryResult, reqResult] = await Promise.allSettled([
+      researchSalary(anthropicApiKey, job, model),
+      researchApplicationRequirements(anthropicApiKey, job, model)
+    ]);
+
+    const sal = salaryResult.status === "fulfilled"
+      ? salaryResult.value
+      : { role: job.title, company: job.company, baseLow: 0, baseHigh: 0, tcLow: 0, tcHigh: 0, currency: "USD", sources: [], notes: "Unavailable" };
+    salaryData[i] = sal;
+
+    const reqs = reqResult.status === "fulfilled"
+      ? reqResult.value
+      : { coverLetterStatus: "unknown" as const, additionalQuestions: [], notes: "Error" };
+    appRequirements[i] = reqs;
+
+    const salStr = sal.baseHigh > 0 ? formatSalaryRange(sal) : "salary N/A";
+    const flag = minBaseSalary && sal.baseHigh > 0 && sal.baseHigh < minBaseSalary
+      ? chalk.red(` ⚠ below min $${(minBaseSalary/1000).toFixed(0)}k`) : "";
+    const clNote = ` · ${clLabel[reqs.coverLetterStatus]}`;
+    const qNote = reqs.additionalQuestions.length > 0 ? chalk.cyan(` · ${reqs.additionalQuestions.length}Q`) : "";
+
+    sp.succeed(`  ${job.company}: ${salStr}${flag}${clNote}${qNote}`);
+  }));
 
   // ── Checkpoint 1: Role selection ──────────────────────────────────────────
   agentHeader(4, TOTAL_STEPS, "Select Roles to Pursue");
