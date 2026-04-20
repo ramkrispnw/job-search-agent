@@ -174,21 +174,31 @@ Return ONLY this JSON:
 
 // ─── Main export ──────────────────────────────────────────────────────────────
 
+// Quick estimate using Claude knowledge only — no Puppeteer, fast
+// Use this for the shortlist stage where speed matters more than precision
+export async function estimateRequirementsQuick(
+  apiKey: string,
+  job: JobResult,
+  model: string
+): Promise<AppRequirements> {
+  return estimateRequirementsFromKnowledge(apiKey, job, model);
+}
+
+// Full scrape: Puppeteer form analysis + Claude fallback
+// Use this in the reasoning layer where accuracy matters (selected roles only)
 export async function researchApplicationRequirements(
   apiKey: string,
   job: JobResult,
   model: string
 ): Promise<AppRequirements> {
-  // 1. Scrape the actual application form — hard 12s timeout so it never hangs
-  const scrapeWithTimeout = Promise.race([
+  // Scrape actual form — hard 12s timeout so it never hangs
+  const scraped = await Promise.race([
     scrapeApplicationForm(job.url),
     new Promise<{ coverLetterStatus: AppRequirements["coverLetterStatus"]; questions: string[]; notes: string }>(
       resolve => setTimeout(() => resolve({ coverLetterStatus: "unknown", questions: [], notes: "Timed out" }), 12000)
     )
   ]);
-  const scraped = await scrapeWithTimeout;
 
-  // If we got useful data from the form, return it
   if (scraped.coverLetterStatus !== "unknown" || scraped.questions.length > 0) {
     return {
       coverLetterStatus: scraped.coverLetterStatus,
@@ -197,6 +207,5 @@ export async function researchApplicationRequirements(
     };
   }
 
-  // 2. Fall back to Claude's knowledge if scraping found nothing
   return estimateRequirementsFromKnowledge(apiKey, job, model);
 }

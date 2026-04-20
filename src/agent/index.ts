@@ -12,7 +12,7 @@ import { searchJobsForProfile, JobResult } from "../tools/webSearch";
 import { tailorResume } from "../tools/resumeTailor";
 import { generateCoverLetter } from "../tools/coverLetter";
 import { researchSalary, formatSalaryRange, SalaryData } from "../tools/salaryResearch";
-import { researchApplicationRequirements, AppRequirements } from "../tools/applicationResearch";
+import { researchApplicationRequirements, estimateRequirementsQuick, AppRequirements } from "../tools/applicationResearch";
 import { researchCompany, CompanyBrief } from "../tools/companyResearch";
 import { buildPositioningStrategy, PositioningStrategy } from "../tools/positioningStrategy";
 import { generateQuestionAnswers } from "../tools/questionAnswers";
@@ -116,7 +116,8 @@ async function main() {
     unknown:     chalk.dim("CL unknown")
   };
 
-  // Run salary + requirements per company concurrently, complete spinner as each finishes
+  // Stage 3: salary + quick Claude requirements estimate (no Puppeteer — fast)
+  // Full Puppeteer form scrape runs later in the reasoning layer for selected roles only
   const salaryData: SalaryData[] = new Array(sortedJobs.length);
   const appRequirements: AppRequirements[] = new Array(sortedJobs.length);
 
@@ -124,7 +125,7 @@ async function main() {
     const sp = ora(`  ${job.company}: salary & requirements...`).start();
     const [salaryResult, reqResult] = await Promise.allSettled([
       researchSalary(anthropicApiKey, job, model),
-      researchApplicationRequirements(anthropicApiKey, job, model)
+      estimateRequirementsQuick(anthropicApiKey, job, model)
     ]);
 
     const sal = salaryResult.status === "fulfilled"
@@ -204,7 +205,19 @@ async function main() {
 
     console.log(chalk.bold.cyan(`\n  ${label} ${job.company} — ${job.title}`));
 
-    // ── A: Company research ──────────────────────────────────────────────────
+    // ── A: Full requirements scrape (Puppeteer — only for selected roles) ────
+    const fReqSpin = ora(`  ${label} Checking application form...`).start();
+    try {
+      const fullReqs = await researchApplicationRequirements(anthropicApiKey, job, model);
+      // Merge into appRequirements — full scrape overrides the quick estimate
+      appRequirements[i] = fullReqs;
+      const qNote = fullReqs.additionalQuestions.length > 0
+        ? chalk.cyan(` · ${fullReqs.additionalQuestions.length} question(s) found`)
+        : " · no extra questions";
+      fReqSpin.succeed(`  ${label} Form: ${clLabel[fullReqs.coverLetterStatus]}${qNote}`);
+    } catch { fReqSpin.warn(`  ${label} Form check failed — using estimate`); }
+
+    // ── B: Company research ──────────────────────────────────────────────────
     const resSpin = ora(`  ${label} Researching ${job.company}...`).start();
     let companyBrief: CompanyBrief | undefined;
     try {
