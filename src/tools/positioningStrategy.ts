@@ -99,7 +99,7 @@ Return ONLY this JSON:
   try {
     const response = await client.messages.create({
       model,
-      max_tokens: 3000,
+      max_tokens: 6000,
       thinking: { type: "enabled", budget_tokens: 4000 } as any,
       messages: [{ role: "user", content: prompt }]
     });
