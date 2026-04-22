@@ -24,6 +24,14 @@ export async function searchJobsForProfile(
 ): Promise<JobResult[]> {
   const client = new Anthropic({ apiKey });
 
+  // Truncate resume for the search step — we only need enough context to find matching roles.
+  // The full resume is used later in the reasoning layer. Keeping this short reduces input
+  // tokens and avoids TPM rate limits during the search call.
+  const resumeWords = resumeText.split(/\s+/);
+  const resumeForSearch = resumeWords.length > 400
+    ? resumeWords.slice(0, 400).join(" ") + "\n\n[... resume continues — full version used in tailoring step]"
+    : resumeText;
+
   const exclusionNote = excludeRoles.length > 0
     ? `\n## Already Recommended — Do NOT suggest these roles again\n${excludeRoles.map(r => `- ${r.title} at ${r.company}`).join("\n")}\n`
     : "";
@@ -37,7 +45,7 @@ You are a job search specialist. Based on this candidate's resume and preference
 search the web for the ${roleCount} most relevant current job openings.
 
 ## Candidate Resume
-${resumeText}
+${resumeForSearch}
 
 ## Target Roles
 ${targetRoles.join(", ")}
@@ -79,31 +87,48 @@ For each role, return a JSON array with this exact structure:
 Return ONLY the JSON array, no other text.
 `;
 
-  const response = await client.messages.create({
-    model,
-    max_tokens: 4096,
-    tools: [
-      {
-        type: "web_search_20250305",
-        name: "web_search"
-      } as any
-    ],
-    messages: [{ role: "user", content: searchPrompt }]
-  });
+  // Retry loop with exponential backoff for rate limit errors
+  let attempt = 0;
+  const maxRetries = 4;
+  const backoff = [30000, 60000, 60000, 60000];
 
-  // Extract text from final response (after tool use)
-  let rawText = "";
-  for (const block of response.content) {
-    if (block.type === "text") rawText += block.text;
+  while (true) {
+    try {
+      const response = await client.messages.create({
+        model,
+        max_tokens: 4096,
+        tools: [{ type: "web_search_20250305", name: "web_search" } as any],
+        messages: [{ role: "user", content: searchPrompt }]
+      });
+
+      // Extract text from final response (after tool use)
+      let rawText = "";
+      for (const block of response.content) {
+        if (block.type === "text") rawText += block.text;
+      }
+
+      // Parse JSON — strip any markdown fences
+      const cleaned = rawText.replace(/```json|```/g, "").trim();
+      const startIdx = cleaned.indexOf("[");
+      const endIdx = cleaned.lastIndexOf("]");
+      if (startIdx === -1 || endIdx === -1) {
+        throw new Error("Could not parse job results from Claude response");
+      }
+
+      return JSON.parse(cleaned.slice(startIdx, endIdx + 1)) as JobResult[];
+
+    } catch (err: any) {
+      const isRateLimit = err?.status === 429 || err?.message?.includes("rate_limit");
+      if (isRateLimit && attempt < maxRetries) {
+        const delay = err?.headers?.["retry-after"]
+          ? parseInt(err.headers["retry-after"]) * 1000
+          : backoff[attempt];
+        console.log(`\n  Rate limited — waiting ${Math.round(delay / 1000)}s before retry (${attempt + 1}/${maxRetries})...`);
+        await new Promise(r => setTimeout(r, delay));
+        attempt++;
+        continue;
+      }
+      throw err;
+    }
   }
-
-  // Parse JSON — strip any markdown fences
-  const cleaned = rawText.replace(/```json|```/g, "").trim();
-  const startIdx = cleaned.indexOf("[");
-  const endIdx = cleaned.lastIndexOf("]");
-  if (startIdx === -1 || endIdx === -1) {
-    throw new Error("Could not parse job results from Claude response");
-  }
-
-  return JSON.parse(cleaned.slice(startIdx, endIdx + 1)) as JobResult[];
 }
