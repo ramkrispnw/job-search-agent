@@ -2,6 +2,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { JobResult } from "./webSearch";
+import { trackTokens } from "../utils/tokenUsage";
 import { PositioningStrategy } from "./positioningStrategy";
 
 export async function tailorResume(
@@ -84,6 +85,7 @@ Return the full tailored resume in Markdown. Start with the candidate's name as 
         }]
       });
 
+      trackTokens(response.usage);
       const text = response.content
         .filter((b: any) => b.type === "text")
         .map((b: any) => b.text)

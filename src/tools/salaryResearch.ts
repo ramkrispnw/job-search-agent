@@ -2,6 +2,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { JobResult } from "./webSearch";
+import { trackTokens } from "../utils/tokenUsage";
 
 export interface SalaryData {
   role: string;
@@ -83,6 +84,7 @@ ${JSON_SCHEMA}
         messages: [{ role: "user", content: prompt }]
       });
 
+      trackTokens(response.usage);
       // web_search_20250305 is server-side — Anthropic handles tool execution.
       // We just read the final text response.
       let rawText = "";

@@ -1,6 +1,7 @@
 // src/tools/webSearch.ts — search for job roles using Claude's web search tool
 
 import Anthropic from "@anthropic-ai/sdk";
+import { trackTokens } from "../utils/tokenUsage";
 
 export interface JobResult {
   title: string;
@@ -100,6 +101,7 @@ Return ONLY the JSON array, no other text.
         tools: [{ type: "web_search_20250305", name: "web_search" } as any],
         messages: [{ role: "user", content: searchPrompt }]
       });
+      trackTokens(response.usage);
 
       // Extract text from final response (after tool use)
       let rawText = "";

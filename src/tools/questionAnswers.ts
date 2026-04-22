@@ -2,6 +2,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { JobResult } from "./webSearch";
+import { trackTokens } from "../utils/tokenUsage";
 import { CompanyBrief } from "./companyResearch";
 import { PositioningStrategy } from "./positioningStrategy";
 
@@ -119,6 +120,7 @@ Return ONLY a JSON object:
           ]
         }]
       });
+      trackTokens(response.usage);
 
       const raw = response.content
         .filter((b: any) => b.type === "text")

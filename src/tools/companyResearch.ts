@@ -2,6 +2,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { JobResult } from "./webSearch";
+import { trackTokens } from "../utils/tokenUsage";
 
 export interface CompanyBrief {
   recentNews: string;         // recent launches, funding, news
@@ -49,6 +50,7 @@ Return ONLY this JSON structure:
       tools: [{ type: "web_search_20250305", name: "web_search" } as any],
       messages: [{ role: "user", content: prompt }]
     });
+    trackTokens(response.usage);
 
     const raw = response.content
       .filter((b: any) => b.type === "text")

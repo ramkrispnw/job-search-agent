@@ -2,6 +2,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { JobResult } from "./webSearch";
+import { trackTokens } from "../utils/tokenUsage";
 
 export interface AppRequirements {
   coverLetterStatus: "required" | "recommended" | "optional" | "unknown";
@@ -160,6 +161,7 @@ Return ONLY this JSON:
       model, max_tokens: 400,
       messages: [{ role: "user", content: prompt }]
     });
+    trackTokens(response.usage);
 
     const rawText = response.content.filter(b => b.type === "text").map((b: any) => b.text).join("");
     const cleaned = rawText.replace(/```json|```/g, "").trim();

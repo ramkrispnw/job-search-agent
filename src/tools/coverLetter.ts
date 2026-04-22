@@ -2,6 +2,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { JobResult } from "./webSearch";
+import { trackTokens } from "../utils/tokenUsage";
 import { CompanyBrief } from "./companyResearch";
 import { PositioningStrategy } from "./positioningStrategy";
 
@@ -91,6 +92,7 @@ Re: ${job.title}
         }],
         system: "You are an expert cover letter writer. Be direct, specific, human. Show genuine company knowledge."
       });
+      trackTokens(response.usage);
 
       return response.content
         .filter((b: any) => b.type === "text")

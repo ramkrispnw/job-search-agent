@@ -23,6 +23,7 @@ import { applyToJob } from "../ats/index";
 import { upsertApplication, logRun, getStats, getAll } from "../tracker/index";
 import { CONFIG_DIR } from "../config/types";
 import { agentHeader, dashboardBox } from "../utils/ui";
+import { markRoleStart, roleDelta, formatUsage, printTotalSummary } from "../utils/tokenUsage";
 import pLimit from "p-limit";
 
 function slugify(s: string) {
@@ -208,6 +209,7 @@ async function main() {
     const label = `[${i+1}/${sortedJobs.length}]`;
 
     console.log(chalk.bold.cyan(`\n  ${label} ${job.company} — ${job.title}`));
+    markRoleStart(); // snapshot before this role's API calls
 
     // ── A + B: Form scrape AND company research in parallel (no dependency) ──
     const fReqSpin = ora(`  ${label} Checking application form...`).start();
@@ -302,6 +304,9 @@ async function main() {
         aSpin.succeed(`  ${label} Answers done`);
       } catch { aSpin.warn(`  ${label} Answers skipped`); }
     }
+
+    // ── Token usage for this role ─────────────────────────────────────────────
+    console.log(chalk.dim(`  ${label} `) + formatUsage(roleDelta(), "tokens:"));
 
     return { i, job, jobId, tailored, coverText, strategy, answersEntry };
   })));
@@ -412,6 +417,8 @@ async function main() {
   }
 
   logRun({ run_date: dateStr, jobs_found: sortedJobs.length, applied: 0, queued: localItems.length, output_dir: outputPath });
+
+  printTotalSummary();
 
   console.log(chalk.bold.green(`
   ✅  Done!
