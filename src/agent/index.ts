@@ -23,6 +23,7 @@ import { applyToJob } from "../ats/index";
 import { upsertApplication, logRun, getStats, getAll } from "../tracker/index";
 import { CONFIG_DIR } from "../config/types";
 import { agentHeader, dashboardBox } from "../utils/ui";
+import pLimit from "p-limit";
 
 function slugify(s: string) {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 30);
@@ -191,56 +192,70 @@ async function main() {
   const report = generateJobsReport(sortedJobs, candidateName, targetRoles, targetCompanyTypes, salaryData, appRequirements, minBaseSalary);
   reportSpinner.succeed("HTML jobs report ready");
 
-  // ── Step 6: Reasoning Layer + Writing (per selected role) ─────────────────
+  // ── Step 6: Reasoning Layer + Writing (per selected role, up to 2 concurrent) ──
   agentHeader(6, TOTAL_STEPS, "Research · Strategy · Tailor");
 
   const outputFiles: OutputFile[] = [{ name: "jobs-report.html", content: report, type: "report" }];
   const localItems: { job: JobResult; jobId: string; resumePath: string; coverText: string }[] = [];
 
-  for (let i = 0; i < sortedJobs.length; i++) {
-    const job = sortedJobs[i];
+  // Cap at 2 concurrent roles — Anthropic rate limits make >2 counterproductive
+  const limit = pLimit(2);
+
+  // Collect results in order (index-stable)
+  const roleResults = await Promise.all(sortedJobs.map((job, i) => limit(async () => {
     const reqs = appRequirements[i];
     const jobId = `${dateStr}-${slugify(job.company)}-${slugify(job.title)}`;
     const label = `[${i+1}/${sortedJobs.length}]`;
 
     console.log(chalk.bold.cyan(`\n  ${label} ${job.company} — ${job.title}`));
 
-    // ── A: Full requirements scrape (Puppeteer — only for selected roles) ────
+    // ── A + B: Form scrape AND company research in parallel (no dependency) ──
     const fReqSpin = ora(`  ${label} Checking application form...`).start();
-    try {
-      const fullReqs = await researchApplicationRequirements(anthropicApiKey, job, model);
-      // Merge into appRequirements — full scrape overrides the quick estimate
-      appRequirements[i] = fullReqs;
-      const qNote = fullReqs.additionalQuestions.length > 0
-        ? chalk.cyan(` · ${fullReqs.additionalQuestions.length} question(s) found`)
-        : " · no extra questions";
-      fReqSpin.succeed(`  ${label} Form: ${clLabel[fullReqs.coverLetterStatus]}${qNote}`);
-    } catch { fReqSpin.warn(`  ${label} Form check failed — using estimate`); }
+    const resSpin  = ora(`  ${label} Researching ${job.company}...`).start();
 
-    // ── B: Company research ──────────────────────────────────────────────────
-    const resSpin = ora(`  ${label} Researching ${job.company}...`).start();
+    const [scrapeResult, researchResult] = await Promise.allSettled([
+      researchApplicationRequirements(anthropicApiKey, job, model),
+      researchCompany(anthropicApiKey, job, model)
+    ]);
+
+    // Handle form scrape result
+    let mergedReqs = reqs;
+    if (scrapeResult.status === "fulfilled") {
+      mergedReqs = scrapeResult.value;
+      appRequirements[i] = mergedReqs;
+      const qNote = mergedReqs.additionalQuestions.length > 0
+        ? chalk.cyan(` · ${mergedReqs.additionalQuestions.length} question(s) found`)
+        : " · no extra questions";
+      fReqSpin.succeed(`  ${label} Form: ${clLabel[mergedReqs.coverLetterStatus]}${qNote}`);
+    } else {
+      fReqSpin.warn(`  ${label} Form check failed — using estimate`);
+    }
+
+    // Handle company research result
     let companyBrief: CompanyBrief | undefined;
-    try {
-      companyBrief = await researchCompany(anthropicApiKey, job, model);
+    if (researchResult.status === "fulfilled") {
+      companyBrief = researchResult.value;
       resSpin.succeed(`  ${label} ${job.company}: research complete`);
       if (companyBrief.talkingPoints.length > 0) {
         companyBrief.talkingPoints.forEach(tp => console.log(chalk.dim(`    → ${tp}`)));
       }
-    } catch { resSpin.warn(`  ${label} ${job.company}: research unavailable`); }
+    } else {
+      resSpin.warn(`  ${label} ${job.company}: research unavailable`);
+    }
 
-    // ── B: Positioning strategy ──────────────────────────────────────────────
+    // ── C: Positioning strategy (needs A + B results) ────────────────────────
     const strSpin = ora(`  ${label} Building positioning strategy...`).start();
     let strategy: PositioningStrategy | undefined;
     try {
       strategy = await buildPositioningStrategy(
         anthropicApiKey, resume.parsedText, job,
         companyBrief ?? { recentNews: "", productDirection: job.description, cultureSignals: "", whyHiringNow: job.whyItFits, talkingPoints: [] },
-        reqs, model
+        mergedReqs, model
       );
       strSpin.succeed(`  ${label} Strategy: ${strategy.narrativeAngle.slice(0, 80)}${strategy.narrativeAngle.length > 80 ? "..." : ""}`);
     } catch { strSpin.warn(`  ${label} Strategy unavailable — using standard tailoring`); }
 
-    // ── C: Resume ────────────────────────────────────────────────────────────
+    // ── D: Resume ────────────────────────────────────────────────────────────
     const rSpin = ora(`  ${label} Tailoring resume...`).start();
     let tailored = "";
     try {
@@ -249,13 +264,16 @@ async function main() {
         strategy
       );
       rSpin.succeed(`  ${label} Resume done`);
-    } catch (err: any) { rSpin.fail(`  ${label} Resume failed: ${err.message}`); continue; }
+    } catch (err: any) {
+      rSpin.fail(`  ${label} Resume failed: ${err.message}`);
+      return null; // skip this role
+    }
 
-    // ── D: Cover letter ──────────────────────────────────────────────────────
-    const needsCoverLetter = reqs.coverLetterStatus !== "optional";
+    // ── E: Cover letter ──────────────────────────────────────────────────────
+    const needsCoverLetter = mergedReqs.coverLetterStatus !== "optional";
     let coverText = "";
     if (needsCoverLetter) {
-      const clSpin = ora(`  ${label} Cover letter (${reqs.coverLetterStatus})...`).start();
+      const clSpin = ora(`  ${label} Cover letter (${mergedReqs.coverLetterStatus})...`).start();
       try {
         coverText = await generateCoverLetter(anthropicApiKey, resume.parsedText, job, candidateName, model,
           (secs, attempt) => { clSpin.text = `  ${label} Cover letter (rate limited — retrying in ${secs}s, attempt ${attempt}/4)`; },
@@ -267,30 +285,36 @@ async function main() {
       console.log(chalk.dim(`  ${label} Cover letter: skipped (optional)`));
     }
 
-    // ── E: Additional question answers ───────────────────────────────────────
-    if (reqs.additionalQuestions.length > 0) {
-      const aSpin = ora(`  ${label} Answering ${reqs.additionalQuestions.length} question(s)...`).start();
+    // ── F: Additional question answers ───────────────────────────────────────
+    let answersEntry: OutputFile | null = null;
+    if (mergedReqs.additionalQuestions.length > 0) {
+      const aSpin = ora(`  ${label} Answering ${mergedReqs.additionalQuestions.length} question(s)...`).start();
       try {
-        // Pass a brief summary of the cover letter so answers don't repeat it
-        const coverSummary = coverText
-          ? `Cover letter used: ${coverText.slice(0, 300)}...`
-          : undefined;
+        const coverSummary = coverText ? `Cover letter used: ${coverText.slice(0, 300)}...` : undefined;
         const answers = await generateQuestionAnswers(
-          anthropicApiKey, resume.parsedText, job, reqs.additionalQuestions,
+          anthropicApiKey, resume.parsedText, job, mergedReqs.additionalQuestions,
           candidateName, model,
           (secs, attempt) => { aSpin.text = `  ${label} Answers (rate limited — retrying in ${secs}s, attempt ${attempt}/4)`; },
           companyBrief, strategy, coverSummary
         );
-        const answersContent = reqs.additionalQuestions.map(q => `## ${q}\n\n${answers[q] ?? "N/A"}\n`).join("\n---\n\n");
-        outputFiles.push({ name: `answers-${i+1}-${slugify(job.company)}.md`, content: answersContent, type: "cover_letter" });
+        const answersContent = mergedReqs.additionalQuestions.map(q => `## ${q}\n\n${answers[q] ?? "N/A"}\n`).join("\n---\n\n");
+        answersEntry = { name: `answers-${i+1}-${slugify(job.company)}.md`, content: answersContent, type: "cover_letter" };
         aSpin.succeed(`  ${label} Answers done`);
       } catch { aSpin.warn(`  ${label} Answers skipped`); }
     }
 
+    return { i, job, jobId, tailored, coverText, strategy, answersEntry };
+  })));
+
+  // Reassemble output in original order (parallel results arrive out of order)
+  for (const result of roleResults) {
+    if (!result) continue;
+    const { i, job, jobId, tailored, coverText, strategy, answersEntry } = result;
+
+    if (answersEntry) outputFiles.push(answersEntry);
     outputFiles.push({ name: `resume-${i+1}-${slugify(job.company)}.md`, content: tailored, type: "resume" });
     if (coverText) outputFiles.push({ name: `cover-${i+1}-${slugify(job.company)}.md`, content: coverText, type: "cover_letter" });
 
-    // Save strategy doc alongside artifacts
     if (strategy) {
       const strategyContent = [
         `# Positioning Strategy — ${job.title} at ${job.company}`,
@@ -311,7 +335,6 @@ async function main() {
       outputFiles.push({ name: `strategy-${i+1}-${slugify(job.company)}.md`, content: strategyContent, type: "cover_letter" });
     }
 
-    // Temp local copy for ATS upload
     const tmpPath = path.join(CONFIG_DIR, "tmp", `resume-${slugify(job.company)}.md`);
     await fs.ensureDir(path.dirname(tmpPath));
     await fs.writeFile(tmpPath, tailored, "utf8");

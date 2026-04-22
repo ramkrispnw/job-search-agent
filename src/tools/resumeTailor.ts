@@ -73,8 +73,8 @@ Return the full tailored resume in Markdown. Start with the candidate's name as 
     try {
       const response = await client.messages.create({
         model: thinkingModel,
-        max_tokens: 8000,
-        thinking: { type: "enabled", budget_tokens: 5000 } as any,
+        max_tokens: 3000,
+        thinking: { type: "enabled", budget_tokens: 3000 } as any,
         messages: [{
           role: "user",
           content: [
