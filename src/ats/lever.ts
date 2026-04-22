@@ -70,7 +70,7 @@ export async function applyLever(
     const fileInput = await page.$('input[type="file"]');
     if (!fileInput) throw new Error("Could not find resume upload field");
     await fileInput.uploadFile(payload.resumePath);
-    await page.waitForTimeout(2000); // wait for upload
+    await new Promise(r => setTimeout(r, 2000)); // wait for upload
 
     // Fill cover letter if field exists
     if (payload.coverLetter) {
