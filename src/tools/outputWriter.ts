@@ -32,6 +32,7 @@ export async function writeDailyOutput(
         const docxName = file.name.replace(/\.md$/, ".docx");
         await fs.writeFile(path.join(dayDir, docxName), docxBuffer);
       } else {
+        // html and md files are both utf8 text
         await fs.writeFile(path.join(dayDir, file.name), file.content, "utf8");
       }
     }
@@ -44,27 +45,19 @@ export async function writeDailyOutput(
   const auth = getAuthClient(gd.clientId, gd.clientSecret, gd.refreshToken);
   const dayFolderId = await createFolder(auth, folderName, gd.folderId);
 
-  const links: string[] = [];
-  for (const file of files) {
-    let link: string;
-
+  const links = await Promise.all(files.map(async (file) => {
     if (file.type === "resume") {
       if (resumeFormat === "google_doc") {
         const docName = file.name.replace(/\.md$/, "");
-        link = await uploadAsGoogleDoc(auth, dayFolderId, docName, file.content);
+        return uploadAsGoogleDoc(auth, dayFolderId, docName, file.content);
       } else if (resumeFormat === "word_doc") {
         const docxBuffer = await markdownToDocxBuffer(file.content);
         const docxName = file.name.replace(/\.md$/, ".docx");
-        link = await uploadDocxBuffer(auth, dayFolderId, docxName, docxBuffer);
-      } else {
-        link = await uploadFile(auth, dayFolderId, file.name, file.content);
+        return uploadDocxBuffer(auth, dayFolderId, docxName, docxBuffer);
       }
-    } else {
-      link = await uploadFile(auth, dayFolderId, file.name, file.content);
     }
-
-    links.push(link);
-  }
+    return uploadFile(auth, dayFolderId, file.name, file.content);
+  }));
 
   return `Google Drive folder: ${folderName} (${links.length} files uploaded)`;
 }

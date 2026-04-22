@@ -11,20 +11,24 @@ export interface ATSInfo {
 export function detectATS(url: string): ATSInfo {
   const u = url.toLowerCase();
 
-  if (u.includes("lever.co") || u.includes("jobs.lever.co")) {
+  // Lever — jobs.lever.co or lever.co
+  if (u.includes("lever.co")) {
     return { type: "lever", applyUrl: url, canAutoApply: true };
   }
 
-  if (u.includes("greenhouse.io") || u.includes("boards.greenhouse.io")) {
+  // Greenhouse — boards.greenhouse.io, job-boards.greenhouse.io, or any greenhouse.io subdomain
+  if (u.includes("greenhouse.io")) {
     return { type: "greenhouse", applyUrl: url, canAutoApply: true };
   }
 
-  if (u.includes("myworkdayjobs.com") || u.includes("workday.com")) {
+  // Workday — myworkdayjobs.com or *.workday.com/*/jobs
+  if (u.includes("myworkdayjobs.com") || (u.includes("workday.com") && u.includes("/jobs"))) {
     return { type: "workday", applyUrl: url, canAutoApply: true };
   }
 
-  if (u.includes("ashbyhq.com") || u.includes("jobs.ashbyhq.com")) {
-    return { type: "ashby", applyUrl: url, canAutoApply: false }; // future
+  // Ashby — jobs.ashbyhq.com or ashbyhq.com
+  if (u.includes("ashbyhq.com")) {
+    return { type: "ashby", applyUrl: url, canAutoApply: false };
   }
 
   return { type: "unknown", applyUrl: url, canAutoApply: false };

@@ -29,6 +29,7 @@ export interface ApplyResult {
   error?: string;
   skipped?: boolean;
   skipReason?: string;
+  needsEmailVerification?: boolean;
 }
 
 export async function applyToJob(options: ApplyOptions): Promise<ApplyResult> {
@@ -68,13 +69,20 @@ export async function applyToJob(options: ApplyOptions): Promise<ApplyResult> {
     };
   }
 
+  const emailCredentials = config.emailConfig
+    ? { smtpUser: config.emailConfig.smtpUser, smtpPass: config.emailConfig.smtpPass }
+    : undefined;
+
   const payload = {
     name: candidateName,
     email,
     phone,
     resumePath: pdfPath,
     coverLetter: coverLetterText,
-    linkedinUrl: linkedin
+    linkedinUrl: linkedin,
+    workAuthorized: config.applicantInfo?.workAuthorized ?? true,
+    requiresSponsorship: config.applicantInfo?.requiresSponsorship ?? false,
+    emailCredentials
   };
 
   let result;

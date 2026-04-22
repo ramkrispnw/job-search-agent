@@ -38,20 +38,27 @@ export async function applyWorkday(
     // Click "Apply" button (Workday uses data-automation-id)
     await page.waitForSelector('[data-automation-id="applyButton"]', { timeout: 15000 });
     await page.click('[data-automation-id="applyButton"]');
-    await page.waitForTimeout(3000);
+    // Wait for next page element rather than a fixed sleep
+    await page.waitForSelector(
+      '[data-automation-id="applyWithoutAccount"], input[type="file"], [data-automation-id="legalNameSection_firstName"]',
+      { timeout: 8000 }
+    ).catch(() => {}); // ignore if none found — page may already be ready
 
     // Workday may redirect to login — check for create account / guest apply
     const guestBtn = await page.$('[data-automation-id="applyWithoutAccount"]');
     if (guestBtn) {
       await guestBtn.click();
-      await page.waitForTimeout(2000);
+      await page.waitForSelector('input[type="file"], [data-automation-id="legalNameSection_firstName"]', { timeout: 6000 }).catch(() => {});
     }
 
     // Step 1: Resume upload (Workday always starts here)
     const resumeInput = await page.$('input[type="file"]');
     if (resumeInput) {
       await resumeInput.uploadFile(payload.resumePath);
-      await page.waitForTimeout(3000); // Workday parses resume
+      // Wait for parse spinner to disappear or a form field to appear
+      await page.waitForSelector('[data-automation-id="legalNameSection_firstName"]', { timeout: 8000 }).catch(() => {
+        return new Promise(r => setTimeout(r, 2000)); // fallback if selector never appears
+      });
     }
 
     // Step 2: Personal info (Workday auto-fills from parsed resume, but we override)
@@ -75,13 +82,23 @@ export async function applyWorkday(
 
       if (submitBtn) {
         await submitBtn.click();
-        await page.waitForTimeout(3000);
+        // Wait for confirmation text or page change
+        await page.waitForFunction(
+          () => document.body.innerText.toLowerCase().includes("thank") ||
+                document.body.innerText.toLowerCase().includes("submitted"),
+          { timeout: 8000 }
+        ).catch(() => {}); // page may not show confirmation inline
         break;
       }
 
       if (nextBtn) {
         await nextBtn.click();
-        await page.waitForTimeout(2000);
+        // Wait for the next button to disappear (step change) or a new one to appear
+        await page.waitForFunction(
+          (prevText: string) => document.body.innerText !== prevText,
+          { timeout: 5000 },
+          await page.evaluate(() => document.body.innerText)
+        ).catch(() => {}); // ignore timeout — continue anyway
       } else {
         break;
       }

@@ -10,14 +10,10 @@ import { parseResume, extractGoogleDocId, fetchGoogleDoc } from "../utils/resume
 import { ask } from "../utils/claude";
 import { saveConfig, loadConfig } from "../utils/config";
 import { getAuthClient, verifyFolderAccess } from "../tools/googleDrive";
+import { setupStepHeader, reviewBox, successBox, infoBox } from "../utils/ui";
+import { installCronJob, hasExistingCronJob, removeCronJob, describeSchedule, WEEKDAYS, CronSchedule, LOG_FILE } from "../utils/cronManager";
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-function header(text: string) {
-  console.log("\n" + chalk.bold.cyan("━".repeat(60)));
-  console.log(chalk.bold.white(` ${text}`));
-  console.log(chalk.bold.cyan("━".repeat(60)) + "\n");
-}
+const TOTAL_STEPS = 9;
 
 function success(text: string) {
   console.log(chalk.green("  ✓ ") + text);
@@ -30,7 +26,7 @@ function info(text: string) {
 // ─── Step 0: API Key ─────────────────────────────────────────────────────────
 
 async function setupApiKey(existing?: string): Promise<string> {
-  header("Step 0 — Anthropic API Key");
+  setupStepHeader(1, TOTAL_STEPS, "Anthropic API Key");
   info("Your API key is stored locally in ~/.job-search-agent/config.json");
   info("Get one at: https://console.anthropic.com/settings/keys\n");
 
@@ -41,13 +37,24 @@ async function setupApiKey(existing?: string): Promise<string> {
       validate: (val) => val.startsWith("sk-") ? true : "Key must start with sk-"
     });
 
-    const spinner = ora("Verifying API key...").start();
+    const spinner = ora("Verifying API key... (up to 10s)").start();
     try {
-      await ask(apiKey, "Say OK", undefined, 10);
-      spinner.succeed("API key verified");
+      // Race the API call against a 10s timeout — retries=0 so it fails fast
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Request timed out")), 10000)
+      );
+      await Promise.race([
+        ask(apiKey, "Say OK", undefined, 10, undefined, 0),
+        timeout
+      ]);
+      spinner.succeed("API key verified ✓");
       return apiKey;
-    } catch {
-      spinner.fail("Could not verify API key — please check it and try again");
+    } catch (err: any) {
+      const msg = err?.status === 401 ? "Invalid API key — check it and try again"
+        : err?.status === 429       ? "Rate limited — wait a moment and try again"
+        : err?.message?.includes("timed out") ? "Request timed out — check your internet connection"
+        : `Could not verify: ${err?.message ?? "unknown error"}`;
+      spinner.fail(msg);
     }
   }
 }
@@ -70,7 +77,7 @@ const MODELS = [
 ];
 
 async function setupModel(existing?: string): Promise<string> {
-  header("Step 0b — Claude Model");
+  setupStepHeader(2, TOTAL_STEPS, "Claude Model");
   info("Choose which Claude model powers the agent. This affects quality and API cost.\n");
 
   return select({
@@ -83,7 +90,7 @@ async function setupModel(existing?: string): Promise<string> {
 // ─── Step 1: Resume Upload ───────────────────────────────────────────────────
 
 async function setupResume(apiKey: string, existing?: UserConfig["resume"]): Promise<UserConfig["resume"]> {
-  header("Step 1 — Upload Your Resume");
+  setupStepHeader(3, TOTAL_STEPS, "Resume");
 
   if (existing) {
     const reuse = await confirm({
@@ -130,7 +137,7 @@ async function setupResume(apiKey: string, existing?: UserConfig["resume"]): Pro
     await fs.writeFile(originalPath, parsedText, "utf8");
     success(`Local copy saved to ${originalPath}`);
   } else {
-    const filePath = await input({
+    let filePath = await input({
       message: "Path to your resume file:",
       validate: async (val) => {
         const expanded = val.replace("~", process.env.HOME!);
@@ -185,15 +192,19 @@ async function setupTargetRoles(
   resumeText: string,
   existing?: string[]
 ): Promise<string[]> {
-  header("Step 2 — Target Roles");
+  setupStepHeader(4, TOTAL_STEPS, "Target Roles");
 
   let roles: string[] = existing ?? [];
 
-  if (roles.length === 0) {
+  if (roles.length > 0) {
+    console.log(chalk.bold("\n  Currently saved target roles:\n"));
+    roles.forEach((r, i) => console.log(chalk.dim(`  ${i + 1}.`) + " " + r));
+    console.log();
+  } else {
     const spinner = ora("Analyzing your resume to suggest target roles...").start();
     const raw = await ask(
       apiKey,
-      `Based on this resume, suggest 8 specific job titles this person should target. 
+      `Based on this resume, suggest 8 specific job titles this person should target.
 Return ONLY a JSON array of strings. No explanation.
 
 Resume:
@@ -210,9 +221,8 @@ ${resumeText}`,
     } catch {
       roles = ["Senior Product Marketing Manager", "Director of PMM", "Head of Product Marketing"];
     }
+    console.log();
   }
-
-  console.log("\n");
   const action = await select({
     message: "What would you like to do?",
     choices: [
@@ -252,11 +262,15 @@ async function setupCompanyTypes(
   resumeText: string,
   existing?: string[]
 ): Promise<string[]> {
-  header("Step 3 — Target Company Types");
+  setupStepHeader(5, TOTAL_STEPS, "Company Types");
 
   let types: string[] = existing ?? [];
 
-  if (types.length === 0) {
+  if (types.length > 0) {
+    console.log(chalk.bold("\n  Currently saved company types:\n"));
+    types.forEach((t, i) => console.log(chalk.dim(`  ${i + 1}.`) + " " + t));
+    console.log();
+  } else {
     const spinner = ora("Suggesting company types based on your background...").start();
     const raw = await ask(
       apiKey,
@@ -278,9 +292,8 @@ ${resumeText}`,
     } catch {
       types = ["AI-native startups Series B-D", "FAANG AI teams", "Developer tool companies"];
     }
+    console.log();
   }
-
-  console.log("\n");
   const action = await select({
     message: "What would you like to do?",
     choices: [
@@ -309,12 +322,172 @@ ${resumeText}`,
   return types;
 }
 
-// ─── Step 4: Applicant Info ──────────────────────────────────────────────────
+// ─── Step 4: Target Locations ────────────────────────────────────────────────
+
+const PRESET_LOCATIONS = [
+  { name: "Remote",              value: "Remote" },
+  { name: "San Francisco, CA",   value: "San Francisco, CA" },
+  { name: "New York, NY",        value: "New York, NY" },
+  { name: "Seattle, WA",         value: "Seattle, WA" },
+  { name: "Austin, TX",          value: "Austin, TX" },
+  { name: "Boston, MA",          value: "Boston, MA" },
+  { name: "Los Angeles, CA",     value: "Los Angeles, CA" },
+  { name: "Chicago, IL",         value: "Chicago, IL" },
+  { name: "Denver, CO",          value: "Denver, CO" },
+  { name: "Miami, FL",           value: "Miami, FL" },
+  { name: "Washington, DC",      value: "Washington, DC" },
+  { name: "London, UK",          value: "London, UK" },
+  { name: "Toronto, Canada",     value: "Toronto, Canada" },
+];
+
+async function setupLocations(existing?: string[]): Promise<string[]> {
+  setupStepHeader(6, TOTAL_STEPS, "Preferred Locations");
+  info("Space to select/deselect, Enter to confirm. Uncheck to remove.\n");
+
+  const { checkbox } = await import("@inquirer/prompts");
+
+  const presetValues = new Set(PRESET_LOCATIONS.map(p => p.value));
+
+  // Existing custom locations (not in the preset list) become extra checkbox entries
+  const existingCustom = (existing ?? []).filter(l => !presetValues.has(l));
+
+  const choices = [
+    ...PRESET_LOCATIONS.map(l => ({
+      ...l,
+      checked: existing ? existing.includes(l.value) : l.value === "Remote"
+    })),
+    ...existingCustom.map(l => ({
+      name: `${l}  ${chalk.dim("(custom)")}`,
+      value: l,
+      checked: true   // already saved → checked by default, user can uncheck to remove
+    }))
+  ];
+
+  const selected = await checkbox({
+    message: "Select preferred locations:",
+    choices
+  });
+
+  // Text input for adding brand-new custom locations
+  const addStr = await input({
+    message: "Add more locations (comma-separated, Enter to skip):",
+    default: ""
+  });
+
+  const added = addStr.split(",").map(l => l.trim()).filter(Boolean);
+  const locations = [...new Set([...selected, ...added])];
+
+  if (locations.length === 0) {
+    console.log(chalk.yellow("  No locations selected — all locations will be considered.\n"));
+    return ["Remote", "Anywhere"];
+  }
+
+  success(`${locations.length} location(s): ${locations.join(", ")}`);
+  return locations;
+}
+
+// ─── Step 5: Preferences ─────────────────────────────────────────────────────
+
+async function setupPreferences(
+  existing?: UserConfig["preferences"]
+): Promise<UserConfig["preferences"]> {
+  setupStepHeader(7, TOTAL_STEPS, "Preferences");
+
+  const { input: numberInput } = await import("@inquirer/prompts");
+
+  const dailyRoleCount = parseInt(await numberInput({
+    message: "How many roles should the agent find per daily run? (1–10):",
+    default: String(existing?.dailyRoleCount ?? 5),
+    validate: (v) => {
+      const n = parseInt(v);
+      if (isNaN(n) || n < 1 || n > 10) return "Enter a number between 1 and 10";
+      return true;
+    }
+  }), 10);
+
+  const minSalaryStr = await input({
+    message: "Minimum base salary expectation in USD (press Enter to skip, e.g. 150000):",
+    default: existing?.minBaseSalary ? String(existing.minBaseSalary) : "",
+    validate: (v) => {
+      if (!v.trim()) return true;
+      const n = parseInt(v.replace(/[,$]/g, ""));
+      if (isNaN(n) || n < 0) return "Enter a number like 150000, or leave blank";
+      return true;
+    }
+  });
+  const minBaseSalary = minSalaryStr.trim()
+    ? parseInt(minSalaryStr.replace(/[,$]/g, ""))
+    : undefined;
+
+  const emailReport = await confirm({
+    message: "Send an HTML job report to your email after each run?",
+    default: existing?.emailReport ?? false
+  });
+
+  if (minBaseSalary) success(`Min base salary: $${(minBaseSalary / 1000).toFixed(0)}k`);
+  success(`${dailyRoleCount} roles per run · email report ${emailReport ? "enabled" : "disabled"}`);
+  return { dailyRoleCount, minBaseSalary, emailReport };
+}
+
+// ─── Step 4b: Email Config ────────────────────────────────────────────────────
+
+async function setupEmailConfig(
+  applicantEmail: string,
+  existing?: UserConfig["emailConfig"]
+): Promise<UserConfig["emailConfig"]> {
+  setupStepHeader(7, TOTAL_STEPS, "Email Configuration (Gmail)");
+  info("Reports will be sent from your Gmail account using an App Password.");
+  info("Generate one at: myaccount.google.com → Security → App Passwords\n");
+
+  while (true) {
+    const smtpUser = await input({
+      message: "Gmail address to send FROM (e.g. you@gmail.com):",
+      default: existing?.smtpUser ?? applicantEmail,
+      validate: (v) => v.includes("@") && v.includes(".") ? true : "Enter a valid email address"
+    });
+
+    const smtpPass = await input({
+      message: "Gmail App Password (16-char, no spaces — NOT your regular password):",
+      default: existing?.smtpPass ?? "",
+      validate: (v) => {
+        const clean = v.replace(/\s/g, "");
+        if (clean.length !== 16) return "App Password should be 16 characters (spaces are OK, they'll be stripped)";
+        return true;
+      }
+    });
+
+    const toAddress = await input({
+      message: "Send reports TO this address:",
+      default: existing?.toAddress ?? applicantEmail,
+      validate: (v) => v.includes("@") ? true : "Enter a valid email address"
+    });
+
+    const testSpin = ora("Sending a test email...").start();
+    try {
+      const nodemailer = require("nodemailer");
+      const transporter = nodemailer.createTransport({
+        host: "smtp.gmail.com", port: 587, secure: false,
+        auth: { user: smtpUser, pass: smtpPass.replace(/\s/g, "") }
+      });
+      await transporter.sendMail({
+        from: `"Job Search Agent" <${smtpUser}>`,
+        to: toAddress,
+        subject: "Job Search Agent — Email configured ✓",
+        html: "<p>Your email report delivery is set up. You'll receive your daily job report here.</p>"
+      });
+      testSpin.succeed(`Test email sent to ${toAddress}`);
+      return { smtpUser, smtpPass: smtpPass.replace(/\s/g, ""), toAddress };
+    } catch (err: any) {
+      testSpin.fail(`Could not send test email: ${err.message}`);
+      info("Common fixes: make sure 2FA is enabled, and use an App Password not your login password.\n");
+    }
+  }
+}
 
 async function setupApplicantInfo(
   existing?: UserConfig["applicantInfo"]
 ): Promise<UserConfig["applicantInfo"]> {
-  header("Step 4 — Contact Info for Auto-Apply");
+  setupStepHeader(8, TOTAL_STEPS, "Contact Info");
   info("Used to fill application forms when auto-applying. Stored locally, never shared.\n");
 
   const email = await input({
@@ -333,18 +506,32 @@ async function setupApplicantInfo(
     default: existing?.linkedin ?? ""
   });
 
+  console.log(chalk.dim("\n  The next two questions are used to auto-fill work authorization fields on application forms.\n"));
+
+  const workAuthorized = await confirm({
+    message: "Are you legally authorized to work in the country where you're applying?",
+    default: existing?.workAuthorized ?? true
+  });
+
+  const requiresSponsorship = await confirm({
+    message: "Will you now or in the future require visa sponsorship?",
+    default: existing?.requiresSponsorship ?? false
+  });
+
   success("Contact info saved");
   return {
     email,
     phone: phone.trim() || undefined,
-    linkedin: linkedin.trim() || undefined
+    linkedin: linkedin.trim() || undefined,
+    workAuthorized,
+    requiresSponsorship
   };
 }
 
-// ─── Step 5: Output Configuration ───────────────────────────────────────────
+// ─── Step 6: Output Configuration ───────────────────────────────────────────
 
 async function setupOutput(existing?: UserConfig["output"]): Promise<UserConfig["output"]> {
-  header("Step 5 — Output Configuration");
+  setupStepHeader(9, TOTAL_STEPS, "Output");
   info("Where should the agent save your daily job reports and tailored resumes?\n");
 
   const mode = await select({
@@ -426,22 +613,19 @@ async function setupOutput(existing?: UserConfig["output"]): Promise<UserConfig[
 
   while (true) {
     clientId = await input({
-      message: "Google OAuth Client ID:",
-      hint: "ends with .apps.googleusercontent.com",
+      message: "Google OAuth Client ID (ends with .apps.googleusercontent.com):",
       default: clientId || undefined,
       validate: (v) => v.includes(".apps.googleusercontent.com") ? true : "Should end with .apps.googleusercontent.com"
     });
 
     clientSecret = await input({
-      message: "Google OAuth Client Secret:",
-      hint: "starts with GOCSPX-",
+      message: "Google OAuth Client Secret (starts with GOCSPX-):",
       default: clientSecret || undefined,
       validate: (v) => v.startsWith("GOCSPX-") ? true : "Should start with GOCSPX-"
     });
 
     refreshToken = await input({
-      message: "Google OAuth Refresh Token:",
-      hint: "starts with 1// — copy only the token value, not the full JSON",
+      message: "Google OAuth Refresh Token (starts with 1//, copy value only not full JSON):",
       default: refreshToken || undefined,
       validate: (v) => {
         if (v.startsWith("1//")) return true;
@@ -453,8 +637,7 @@ async function setupOutput(existing?: UserConfig["output"]): Promise<UserConfig[
     });
 
     folderId = await input({
-      message: "Google Drive Folder ID:",
-      hint: "the last part of the folder URL — short alphanumeric string only",
+      message: "Google Drive Folder ID (short alphanumeric string from the folder URL):",
       default: folderId || undefined,
       validate: (v) => {
         const clean = v.trim();
@@ -496,6 +679,89 @@ async function setupOutput(existing?: UserConfig["output"]): Promise<UserConfig[
   };
 }
 
+// ─── Cron setup ──────────────────────────────────────────────────────────────
+
+async function setupCron(): Promise<void> {
+  if (process.platform === "win32") {
+    console.log(chalk.yellow(
+      "\n  ⚠  Windows detected — automatic scheduling requires WSL or Task Scheduler.\n" +
+      "  Run npm run cron from a WSL terminal to set it up.\n"
+    ));
+    return;
+  }
+
+  console.log("\n" + chalk.cyan("─".repeat(62)));
+  console.log("  " + chalk.bold.white("Automatic Scheduling") + chalk.dim("  (optional)"));
+  console.log(chalk.cyan("─".repeat(62)) + "\n");
+
+  const existing = hasExistingCronJob();
+  if (existing) {
+    console.log(chalk.yellow("  ↻  An existing schedule was found for this agent.\n"));
+  }
+
+  const wantsSchedule = await confirm({
+    message: existing
+      ? "Update the automatic run schedule?"
+      : "Run the agent automatically on a schedule?",
+    default: true
+  });
+
+  if (!wantsSchedule) {
+    if (existing) {
+      const remove = await confirm({ message: "Remove existing schedule?", default: false });
+      if (remove) { removeCronJob(); success("Schedule removed."); }
+    } else {
+      console.log(chalk.dim("  Skipped — run npm run cron later to set up a schedule.\n"));
+    }
+    return;
+  }
+
+  const frequency = await select({
+    message: "How often should the agent run?",
+    choices: [
+      { name: "Daily   — runs every day at a set time", value: "daily"  },
+      { name: "Weekly  — runs once a week on a chosen day", value: "weekly" }
+    ]
+  }) as "daily" | "weekly";
+
+  let weekday: number | undefined;
+  if (frequency === "weekly") {
+    weekday = await select({
+      message: "Which day of the week?",
+      choices: WEEKDAYS
+    });
+  }
+
+  const timeChoice = await select({
+    message: "What time should it run?",
+    choices: [
+      { name: "6:00 AM",  value: { hour: 6,  minute: 0  } },
+      { name: "7:00 AM",  value: { hour: 7,  minute: 0  } },
+      { name: "8:00 AM",  value: { hour: 8,  minute: 0  } },
+      { name: "9:00 AM",  value: { hour: 9,  minute: 0  } },
+      { name: "12:00 PM", value: { hour: 12, minute: 0  } },
+      { name: "Custom",   value: { hour: -1, minute: -1 } }
+    ]
+  });
+
+  let { hour, minute } = timeChoice;
+  if (hour === -1) {
+    hour   = parseInt(await input({ message: "Hour (0–23):",   validate: v => parseInt(v) >= 0 && parseInt(v) <= 23 ? true : "Enter 0–23" }));
+    minute = parseInt(await input({ message: "Minute (0–59):", default: "0", validate: v => parseInt(v) >= 0 && parseInt(v) <= 59 ? true : "Enter 0–59" }));
+  }
+
+  const schedule: CronSchedule = { frequency, hour, minute, weekday };
+
+  try {
+    installCronJob(schedule);
+    success(`Scheduled: ${describeSchedule(schedule)}`);
+    console.log(chalk.dim(`  Logs: ${LOG_FILE}\n`));
+  } catch (err: any) {
+    console.log(chalk.red(`  Could not install cron job: ${err.message}`));
+    console.log(chalk.dim("  Run npm run cron later to set it up manually.\n"));
+  }
+}
+
 // ─── Review screen ───────────────────────────────────────────────────────────
 
 function printReview(
@@ -504,34 +770,46 @@ function printReview(
   resume: UserConfig["resume"],
   roles: string[],
   companies: string[],
+  locations: string[],
+  preferences: UserConfig["preferences"],
   applicantInfo: UserConfig["applicantInfo"],
+  emailConfig: UserConfig["emailConfig"] | undefined,
   output: UserConfig["output"]
 ) {
   const masked = apiKey.slice(0, 8) + "..." + apiKey.slice(-4);
   const outputDesc = output.mode === "local"
     ? `Local → ${output.localPath}`
     : `Google Drive (${output.resumeFormat})`;
+  const salaryDesc = preferences.minBaseSalary
+    ? `$${(preferences.minBaseSalary / 1000).toFixed(0)}k min base`
+    : "no minimum";
+  const emailDesc = preferences.emailReport
+    ? (emailConfig ? emailConfig.toAddress : "enabled — email not configured")
+    : "disabled";
 
-  console.log(chalk.bold("\n  Review your configuration:\n"));
-  console.log(`  ${chalk.dim("0.")}  API Key        ${chalk.white(masked)}`);
-  console.log(`  ${chalk.dim("0b.")} Model          ${chalk.white(model)}`);
-  console.log(`  ${chalk.dim("1.")}  Resume         ${chalk.white(resume.parsedText.split(/\s+/).length + " words")}`);
-  console.log(`  ${chalk.dim("2.")}  Target Roles   ${chalk.white(roles.length + " roles: " + roles.slice(0, 2).join(", ") + (roles.length > 2 ? " ..." : ""))}`);
-  console.log(`  ${chalk.dim("3.")}  Company Types  ${chalk.white(companies.length + " types")}`);
-  console.log(`  ${chalk.dim("4.")}  Contact Info   ${chalk.white(applicantInfo.email + (applicantInfo.phone ? " · " + applicantInfo.phone : ""))}`);
-  console.log(`  ${chalk.dim("5.")}  Output         ${chalk.white(outputDesc)}`);
-  console.log();
+  reviewBox([
+    { label: "API Key",       value: masked },
+    { label: "Model",         value: model },
+    { label: "Resume",        value: resume.parsedText.split(/\s+/).length + " words" },
+    { label: "Target Roles",  value: roles.slice(0, 2).join(", ") + (roles.length > 2 ? ` +${roles.length - 2} more` : "") },
+    { label: "Company Types", value: companies.length + " types" },
+    { label: "Locations",     value: locations.join(", ") },
+    { label: "Roles/Day",     value: String(preferences.dailyRoleCount) },
+    { label: "Min Salary",    value: salaryDesc },
+    { label: "Email Report",  value: emailDesc },
+    { label: "Contact",       value: applicantInfo.email + (applicantInfo.phone ? " · " + applicantInfo.phone : "") },
+    { label: "Output",        value: outputDesc },
+  ]);
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log(chalk.bold.cyan(`
-  ╔══════════════════════════════════════════╗
-  ║        job-search-agent  setup           ║
-  ║  AI-powered job search via Claude Code   ║
-  ╚══════════════════════════════════════════╝
-  `));
+  infoBox("job-search-agent  setup", [
+    chalk.dim("AI-powered job search via Claude · search, score, tailor, apply"),
+    "",
+    chalk.dim("You'll be guided through 8 steps. Press") + " Ctrl+C " + chalk.dim("at any time to exit.")
+  ]);
 
   // Allow Ctrl+C to exit cleanly at any point
   process.on("SIGINT", () => {
@@ -541,84 +819,148 @@ async function main() {
 
   const existing = await loadConfig();
 
+  // ── Update mode: pick which sections to edit ──────────────────────────────
   if (existing) {
-    console.log(chalk.yellow("  Existing configuration found. Running in update mode.\n"));
-  }
-  info("Press Ctrl+C at any time to exit without saving.\n");
+    console.log(chalk.yellow("  ↻  Existing config found.\n"));
 
-  // Run all steps once upfront
-  let apiKey        = await setupApiKey(existing?.anthropicApiKey);
-  let model         = await setupModel(existing?.model);
-  let resume        = await setupResume(apiKey, existing?.resume);
-  let roles         = await setupTargetRoles(apiKey, resume.parsedText, existing?.targetRoles);
-  let companies     = await setupCompanyTypes(apiKey, resume.parsedText, existing?.targetCompanyTypes);
-  let applicantInfo = await setupApplicantInfo(existing?.applicantInfo);
-  let output        = await setupOutput(existing?.output);
+    // Load all values from existing config upfront
+    let apiKey        = existing.anthropicApiKey;
+    let model         = existing.model;
+    let resume        = existing.resume;
+    let roles         = existing.targetRoles;
+    let companies     = existing.targetCompanyTypes;
+    let locations     = existing.targetLocations ?? [];
+    let preferences   = existing.preferences ?? { dailyRoleCount: 5, emailReport: false };
+    let applicantInfo = existing.applicantInfo;
+    let emailConfig   = existing.emailConfig;
+    let output        = existing.output;
 
-  // Review + edit loop
-  while (true) {
-    printReview(apiKey, model, resume, roles, companies, applicantInfo, output);
+    const EDIT_CHOICES = [
+      { name: "✅  Save and finish", value: "save" },
+      { name: "─────────────────────────────", value: "sep", disabled: true },
+      { name: "  API key", value: "apiKey" },
+      { name: "  Model", value: "model" },
+      { name: "  Resume", value: "resume" },
+      { name: "  Target roles", value: "roles" },
+      { name: "  Target company types", value: "companies" },
+      { name: "  Preferred locations", value: "locations" },
+      { name: "  Preferences  (roles/day, salary, email report)", value: "preferences" },
+      { name: "  Contact info  (email, phone, LinkedIn, work auth)", value: "contact" },
+      { name: "  Email report settings", value: "email" },
+      { name: "  Output settings", value: "output" },
+      { name: "─────────────────────────────", value: "sep2", disabled: true },
+      { name: "✖  Exit without saving", value: "exit" },
+    ] as const;
 
-    const action = await select({
-      message: "Ready to save?",
-      choices: [
-        { name: "✅  Save and finish", value: "save" },
-        { name: "✏️   Edit API key", value: "apiKey" },
-        { name: "✏️   Edit model", value: "model" },
-        { name: "✏️   Edit resume", value: "resume" },
-        { name: "✏️   Edit target roles", value: "roles" },
-        { name: "✏️   Edit company types", value: "companies" },
-        { name: "✏️   Edit contact info", value: "contact" },
-        { name: "✏️   Edit output settings", value: "output" },
-        { name: "✖   Exit without saving", value: "exit" },
-      ]
-    });
+    while (true) {
+      printReview(apiKey, model, resume, roles, companies, locations, preferences, applicantInfo, emailConfig, output);
 
-    if (action === "save") break;
-    if (action === "exit") {
-      console.log(chalk.yellow("\n  Exited without saving. Run npm run setup to continue.\n"));
-      process.exit(0);
+      const action = await select({
+        message: "What would you like to edit?",
+        choices: EDIT_CHOICES as any
+      });
+
+      if (action === "save") break;
+      if (action === "exit") {
+        console.log(chalk.yellow("\n  Exited without saving.\n"));
+        process.exit(0);
+      }
+      if (action === "apiKey")      apiKey        = await setupApiKey(apiKey);
+      if (action === "model")       model         = await setupModel(model);
+      if (action === "resume")      resume        = await setupResume(apiKey, resume);
+      if (action === "roles")       roles         = await setupTargetRoles(apiKey, resume.parsedText, roles);
+      if (action === "companies")   companies     = await setupCompanyTypes(apiKey, resume.parsedText, companies);
+      if (action === "locations")   locations     = await setupLocations(locations);
+      if (action === "preferences") preferences   = await setupPreferences(preferences);
+      if (action === "contact")     applicantInfo = await setupApplicantInfo(applicantInfo);
+      if (action === "email")       emailConfig   = await setupEmailConfig(applicantInfo.email, emailConfig);
+      if (action === "output")      output        = await setupOutput(output);
+      if (action === "preferences" && preferences.emailReport && !emailConfig) {
+        emailConfig = await setupEmailConfig(applicantInfo.email);
+      }
     }
-    if (action === "apiKey")    apiKey        = await setupApiKey(apiKey);
-    if (action === "model")     model         = await setupModel(model);
-    if (action === "resume")    resume        = await setupResume(apiKey, resume);
-    if (action === "roles")     roles         = await setupTargetRoles(apiKey, resume.parsedText, roles);
-    if (action === "companies") companies     = await setupCompanyTypes(apiKey, resume.parsedText, companies);
-    if (action === "contact")   applicantInfo = await setupApplicantInfo(applicantInfo);
-    if (action === "output")    output        = await setupOutput(output);
+
+    const config: UserConfig = {
+      version: "1.0.0",
+      createdAt: existing.createdAt,
+      updatedAt: new Date().toISOString(),
+      resume, targetRoles: roles, targetCompanyTypes: companies, targetLocations: locations,
+      preferences, output, anthropicApiKey: apiKey, model, applicantInfo, emailConfig
+    };
+    await saveConfig(config);
+    await setupCron();
+    successBox("Settings saved!", [
+      chalk.dim("Config saved to: ") + chalk.white(CONFIG_PATH),
+      "",
+      chalk.bold("Run:") + "  " + chalk.cyan("npm run run") + chalk.dim("  — start a job search with updated settings"),
+    ]);
+    process.exit(0);
+  }
+
+  // ── First-time setup: run all steps in sequence ───────────────────────────
+  let apiKey        = await setupApiKey();
+  let model         = await setupModel();
+  let resume        = await setupResume(apiKey);
+  let roles         = await setupTargetRoles(apiKey, resume.parsedText);
+  let companies     = await setupCompanyTypes(apiKey, resume.parsedText);
+  let locations     = await setupLocations();
+  let preferences   = await setupPreferences();
+  let applicantInfo = await setupApplicantInfo();
+  let emailConfig: UserConfig["emailConfig"] = undefined;
+  if (preferences.emailReport) {
+    emailConfig = await setupEmailConfig(applicantInfo.email);
+  }
+  let output        = await setupOutput();
+
+  // Review + confirm before saving (first-time setup)
+  printReview(apiKey, model, resume, roles, companies, locations, preferences, applicantInfo, emailConfig, output);
+  const confirmed = await confirm({ message: "Save and continue?", default: true });
+  if (!confirmed) {
+    console.log(chalk.yellow("\n  Exited without saving. Run npm run setup to continue.\n"));
+    process.exit(0);
   }
 
   const config: UserConfig = {
     version: "1.0.0",
-    createdAt: existing?.createdAt ?? new Date().toISOString(),
+    createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     resume,
     targetRoles: roles,
     targetCompanyTypes: companies,
+    targetLocations: locations,
+    preferences,
     output,
     anthropicApiKey: apiKey,
     model,
-    applicantInfo
+    applicantInfo,
+    emailConfig
   };
 
   await saveConfig(config);
 
-  console.log(chalk.bold.green(`
-  ✅  Setup complete!
+  // Optional cron scheduling — always offered at end of setup
+  await setupCron();
 
-  Config saved to: ${CONFIG_PATH}
+  successBox("Setup complete!", [
+    chalk.dim("Config saved to: ") + chalk.white(CONFIG_PATH),
+    "",
+    chalk.bold("Next step:") + "  " + chalk.cyan("npm run run") + chalk.dim("  — start your first job search"),
+    "",
+    chalk.dim("npm run status") + "   view application tracker",
+    chalk.dim("npm run resume") + "   update your master resume",
+    chalk.dim("npm run cron")   + "     update schedule anytime",
+    chalk.dim("npm run setup")  + "    change any setting",
+  ]);
 
-  To run the agent:
-  ${chalk.cyan("npm run run")}
-
-  Commands:
-    npm run run     — search, tailor, and apply
-    npm run status  — view application tracker
-    npm run resume  — update your master resume
-  `));
+  process.exit(0);
 }
 
 main().catch((err) => {
+  // @inquirer/prompts v8 throws ExitPromptError on Ctrl+C — treat as clean exit
+  if (err?.name === "ExitPromptError" || err?.constructor?.name === "ExitPromptError") {
+    console.log(chalk.yellow("\n\n  Setup cancelled. Run npm run setup to continue.\n"));
+    process.exit(0);
+  }
   console.error(chalk.red("\n  Error: " + err.message));
   process.exit(1);
 });
