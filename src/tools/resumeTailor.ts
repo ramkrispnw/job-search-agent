@@ -63,9 +63,8 @@ ${strategyBlock}
 Return the full tailored resume in Markdown. Start with the candidate's name as an H1.
 `;
 
-  // Use extended thinking for the model that supports it (opus preferred, sonnet fallback)
-  const thinkingModel = model.includes("opus") ? model : model;
-
+  // No extended thinking here — the positioning strategy already did the reasoning.
+  // This step is pure execution of a pre-specified plan, so thinking adds latency with no gain.
   let attempt = 0;
   const maxRetries = 4;
   const backoff = [15000, 30000, 60000, 60000];
@@ -73,9 +72,8 @@ Return the full tailored resume in Markdown. Start with the candidate's name as 
   while (true) {
     try {
       const response = await client.messages.create({
-        model: thinkingModel,
-        max_tokens: 5000,
-        thinking: { type: "enabled", budget_tokens: 3000 } as any,
+        model,
+        max_tokens: 2500,
         messages: [{
           role: "user",
           content: [

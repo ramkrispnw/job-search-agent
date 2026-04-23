@@ -199,11 +199,13 @@ async function main() {
   const outputFiles: OutputFile[] = [{ name: "jobs-report.html", content: report, type: "report" }];
   const localItems: { job: JobResult; jobId: string; resumePath: string; coverText: string }[] = [];
 
-  // Cap at 2 concurrent roles — Anthropic rate limits make >2 counterproductive
-  const limit = pLimit(2);
+  // Cap at 3 concurrent roles. Safe now that per-role time is ~50s (no thinking in tailor).
+  // Stagger starts by 5s per slot to spread the initial API burst across the TPM window.
+  const limit = pLimit(3);
 
   // Collect results in order (index-stable)
   const roleResults = await Promise.all(sortedJobs.map((job, i) => limit(async () => {
+    if (i > 0) await new Promise(r => setTimeout(r, i * 5000)); // stagger: 0s, 5s, 10s, 15s, 20s
     const reqs = appRequirements[i];
     const jobId = `${dateStr}-${slugify(job.company)}-${slugify(job.title)}`;
     const label = `[${i+1}/${sortedJobs.length}]`;
